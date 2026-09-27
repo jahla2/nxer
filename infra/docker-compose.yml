@@ -35,10 +35,11 @@ services:
     restart: "no"
 
   bootstrap:
-    image: postgres:17-alpine
+    image: python:3.13-slim
+    working_dir: /app
+    volumes: ["../apps/control-api:/app"]
+    command: sh -c "pip install -e . && python -m nexora_control.bootstrap"
     env_file: ["../.env"]
-    volumes: ["./postgres/bootstrap-local.sql:/bootstrap.sql:ro"]
-    command: sh -c 'psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f /bootstrap.sql'
     depends_on:
       migrate: {condition: service_completed_successfully}
     restart: "no"
