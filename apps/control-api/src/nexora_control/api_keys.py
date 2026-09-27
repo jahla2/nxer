@@ -484,26 +484,30 @@ def revoke_api_key(
     with get_connection() as connection:
         with connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
-                """
-                UPDATE api_keys k
-                SET status='revoked',
-                    revoked_at=COALESCE(k.revoked_at, now()),
-                    updated_at=now()
-                WHERE k.id=%s
-                  AND EXISTS (
-                      SELECT 1
-                      FROM projects p
-                      WHERE p.id=k.project_id
-                        AND p.user_id=%s
-                  )
-                RETURNING k.id
+                KEY_SELECT
+                + """
+                  JOIN projects p ON p.id=k.project_id
+                  WHERE k.id=%s AND p.user_id=%s
+                  FOR UPDATE OF k
                 """,
                 (api_key_id, current_user.id),
             )
-            updated = cursor.fetchone()
-            if updated is None:
+            existing = cursor.fetchone()
+            if existing is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
 
+            _invalidate_gateway_auth_cache([existing["key_prefix"]])
+
+            cursor.execute(
+                """
+                UPDATE api_keys
+                SET status='revoked',
+                    revoked_at=COALESCE(revoked_at, now()),
+                    updated_at=now()
+                WHERE id=%s
+                """,
+                (api_key_id,),
+            )
             row = _fetch_key(cursor, api_key_id)
             write_audit(
                 connection,
@@ -514,4 +518,6 @@ def revoke_api_key(
                 metadata={"key_prefix": row["key_prefix"]},
             )
         connection.commit()
+
+    _invalidate_gateway_auth_cache_after_commit([existing["key_prefix"]])
     return APIKeyView(**row)
