@@ -115,7 +115,6 @@ export type HealthResponse={
 };
 
 export type CatalogStatus={
-  provider_key:string;
   status:string;
   last_attempt_at:string|null;
   last_success_at:string|null;
