@@ -24,7 +24,7 @@ func main() {
 	defer admissionController.Close()
 	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
 	if err != nil { log.Fatalf("gateway provider configuration invalid: %v",err) }
-	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil { log.Printf("initial free-model catalog sync failed: %v",err) }
+	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil { log.Fatalf("initial free-model catalog sync failed: %v",err) }
 	go syncModelCatalog(openRouterProvider,modelCatalog,time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute)
 
 	mux := http.NewServeMux()
