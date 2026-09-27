@@ -23,6 +23,10 @@ type OpenRouterProvider struct {
 	client  *http.Client
 }
 
+func (p *OpenRouterProvider) Key() string {
+	return openRouterProviderKey
+}
+
 type ProviderMetrics struct {
 	Status           int
 	TTFTMS           *int
