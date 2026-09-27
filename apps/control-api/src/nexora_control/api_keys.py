@@ -307,6 +307,8 @@ def update_api_key(
             if existing["status"] != "active":
                 raise HTTPException(status_code=409, detail="Only active API keys can be updated")
 
+            _invalidate_gateway_auth_cache([existing["key_prefix"]])
+
             allow_all = (
                 payload.allow_all_free_models
                 if "allow_all_free_models" in fields
@@ -371,6 +373,7 @@ def update_api_key(
                 metadata={"fields": sorted(fields)},
             )
         connection.commit()
+    _invalidate_gateway_auth_cache_after_commit([existing["key_prefix"]])
     return APIKeyView(**row)
 
 
@@ -405,6 +408,8 @@ def rotate_api_key(
                 raise HTTPException(status_code=404, detail="Active API key not found")
             if existing["status"] != "active":
                 raise HTTPException(status_code=409, detail="Only active API keys can be rotated")
+
+            _invalidate_gateway_auth_cache([existing["key_prefix"]])
 
             cursor.execute(
                 """
@@ -463,6 +468,7 @@ def rotate_api_key(
             )
         connection.commit()
 
+    _invalidate_gateway_auth_cache_after_commit([existing["key_prefix"]])
     return APIKeyCreated(api_key=raw_key, **row)
 
 
