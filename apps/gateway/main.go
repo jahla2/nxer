@@ -11,9 +11,10 @@ import (
 var modelCatalog = NewModelCatalog()
 var apiKeyAuthenticator *APIKeyAuthenticator
 var admissionController *AdmissionController
-var openRouterProvider *OpenRouterProvider
+var inferenceProvider InferenceProvider
 var idempotencyGuard *IdempotencyGuard
 var usageRecorder *UsageRecorder
+var modelCatalogStore *ModelCatalogStore
 
 func main() {
 	var err error
@@ -31,18 +32,34 @@ func main() {
 	defer admissionController.Close()
 	idempotencyGuard = NewIdempotencyGuard(admissionController.RedisClient())
 	usageRecorder, err = NewUsageRecorder(getenv("DATABASE_URL", ""))
-	if err != nil { gatewayLogger.Error("usage recorder configuration invalid","error",err.Error()); os.Exit(1) }
+	if err != nil {
+		gatewayLogger.Error("usage recorder configuration invalid","event","gateway_config_invalid","component","usage","error",err.Error())
+		os.Exit(1)
+	}
 	defer usageRecorder.Close()
-	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
+
+	modelCatalogStore, err = NewModelCatalogStore(getenv("DATABASE_URL", ""))
+	if err != nil {
+		gatewayLogger.Error("model catalog configuration invalid","event","gateway_config_invalid","component","catalog","error",err.Error())
+		os.Exit(1)
+	}
+	defer modelCatalogStore.Close()
+
+	inferenceProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
 	if err != nil {
 		gatewayLogger.Error("gateway provider configuration invalid","event","gateway_config_invalid","component","provider","error",err.Error())
 		os.Exit(1)
 	}
-	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil {
+	if err := refreshModelCatalog(context.Background(),inferenceProvider,modelCatalogStore,modelCatalog); err != nil {
 		gatewayLogger.Error("initial free-model catalog sync failed","event","model_sync_failed","error",err.Error())
 		os.Exit(1)
 	}
-	go syncModelCatalog(openRouterProvider,modelCatalog,time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute)
+	go syncModelCatalog(
+		inferenceProvider,
+		modelCatalogStore,
+		modelCatalog,
+		time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute,
+	)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
@@ -70,7 +87,11 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 
 func readyHandler(w http.ResponseWriter, r *http.Request) {
 	ctx,cancel:=context.WithTimeout(r.Context(),2*time.Second); defer cancel()
-	if apiKeyAuthenticator==nil || admissionController==nil || usageRecorder==nil || apiKeyAuthenticator.Ping(ctx)!=nil || admissionController.RedisClient().Ping(ctx).Err()!=nil || usageRecorder.Ping(ctx)!=nil {
+	if apiKeyAuthenticator==nil || admissionController==nil || inferenceProvider==nil || usageRecorder==nil || modelCatalogStore==nil ||
+		apiKeyAuthenticator.Ping(ctx)!=nil ||
+		admissionController.RedisClient().Ping(ctx).Err()!=nil ||
+		usageRecorder.Ping(ctx)!=nil ||
+		modelCatalogStore.Ping(ctx)!=nil {
 		writeJSON(w,http.StatusServiceUnavailable,map[string]any{"status":"not_ready","service":"gateway"}); return
 	}
 	writeJSON(w,http.StatusOK,map[string]any{"status":"ok","service":"gateway"})
@@ -114,7 +135,8 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		writeRequestAPIError(w,r,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required."))
 		return
 	}
-	if _, ok := modelCatalog.Get(req.Model); !ok {
+	route, ok := modelCatalog.Get(req.Model)
+	if !ok {
 		writeRequestAPIError(w,r,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available."))
 		return
 	}
@@ -145,7 +167,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	defer lease.Release(context.WithoutCancel(r.Context()))
 
 	if req.Stream {
-		metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,w)
+		metrics,providerErr:=inferenceProvider.Chat(r.Context(),req,route,w)
 		enqueueUsageEvent(r,principal,req,metrics,providerErr)
 		if providerErr!=nil {
 			if reservation!=nil {
@@ -174,7 +196,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reservation==nil {
-		metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,w)
+		metrics,providerErr:=inferenceProvider.Chat(r.Context(),req,route,w)
 		enqueueUsageEvent(r,principal,req,metrics,providerErr)
 		if providerErr!=nil {
 			writeRequestAPIError(w,r,providerErr)
@@ -183,7 +205,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	buffered:=NewBufferedResponseWriter()
-	metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,buffered)
+	metrics,providerErr:=inferenceProvider.Chat(r.Context(),req,route,buffered)
 	enqueueUsageEvent(r,principal,req,metrics,providerErr)
 	if providerErr!=nil {
 		reservation.Fail(context.WithoutCancel(r.Context()))
@@ -266,12 +288,43 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func getenv(key,fallback string) string { if value:=os.Getenv(key); value!="" { return value }; return fallback }
 
-func syncModelCatalog(provider *OpenRouterProvider,catalog *ModelCatalog,interval time.Duration){
-	if interval < time.Minute { interval=time.Minute }
+func refreshModelCatalog(
+	ctx context.Context,
+	provider InferenceProvider,
+	store *ModelCatalogStore,
+	catalog *ModelCatalog,
+) error {
+	discovered, err := provider.ListFreeModels(ctx)
+	if err != nil {
+		return err
+	}
+	if err := store.Reconcile(ctx, provider.Key(), discovered); err != nil {
+		return err
+	}
+	models, err := store.ListActiveFree(ctx)
+	if err != nil {
+		return err
+	}
+	catalog.Replace(models)
+	return nil
+}
+
+func syncModelCatalog(
+	provider InferenceProvider,
+	store *ModelCatalogStore,
+	catalog *ModelCatalog,
+	interval time.Duration,
+) {
+	if interval < time.Minute {
+		interval = time.Minute
+	}
 	ticker:=time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		if err:=provider.SyncFreeModels(context.Background(),catalog);err!=nil {
+		ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second)
+		err:=refreshModelCatalog(ctx,provider,store,catalog)
+		cancel()
+		if err!=nil {
 			gatewayLogger.Warn("free-model catalog sync failed","event","model_sync_failed","error",err.Error())
 		}
 	}
