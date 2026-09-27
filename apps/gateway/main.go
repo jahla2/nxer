@@ -60,16 +60,35 @@ func readyHandler(w http.ResponseWriter, r *http.Request) {
 
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet { writeAPIError(w,newAPIError(http.StatusMethodNotAllowed,"method_not_allowed","NEXORA_METHOD_NOT_ALLOWED","Method not allowed.")); return }
-	writeJSON(w,http.StatusOK,map[string]any{"object":"list","data":modelCatalog.ListActiveFree()})
+	principal, ok := r.Context().Value(apiKeyContextKey{}).(*APIKeyPrincipal)
+	if !ok { writeAPIError(w,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
+	writeJSON(w,http.StatusOK,map[string]any{"object":"list","data":filterModelsForPrincipal(modelCatalog.ListActiveFree(),principal)})
+}
+
+func filterModelsForPrincipal(models []Model, principal *APIKeyPrincipal) []Model {
+	if principal == nil {
+		return []Model{}
+	}
+	if principal.AllowAllFreeModels {
+		return models
+	}
+	filtered := make([]Model,0,len(models))
+	for _, model := range models {
+		if principal.AllowsModel(model.ID) {
+			filtered = append(filtered,model)
+		}
+	}
+	return filtered
 }
 
 func chatHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost { writeAPIError(w,newAPIError(http.StatusMethodNotAllowed,"method_not_allowed","NEXORA_METHOD_NOT_ALLOWED","Method not allowed.")); return }
 	req, apiErr := decodeChatCompletionRequest(w,r)
 	if apiErr != nil { writeAPIError(w,apiErr); return }
-	if _, ok := modelCatalog.Get(req.Model); !ok { writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
 	principal, ok := r.Context().Value(apiKeyContextKey{}).(*APIKeyPrincipal)
 	if !ok { writeAPIError(w,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
+	if _, ok := modelCatalog.Get(req.Model); !ok { writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
+	if !principal.AllowsModel(req.Model) { writeAPIError(w,newAPIError(http.StatusForbidden,"permission_error","NEXORA_MODEL_NOT_ALLOWED","This API key is not permitted to use the requested model.")); return }
 	if idemErr:=idempotencyGuard.Begin(r,principal,req); idemErr!=nil { writeAPIError(w,idemErr); return }
 	lease, admissionErr := admissionController.Admit(r.Context(), principal)
 	if admissionErr != nil { writeAPIError(w, admissionErr); return }

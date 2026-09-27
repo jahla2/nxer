@@ -23,6 +23,7 @@ type APIKeyPrincipal struct {
 	ProjectID          string
 	DefaultModelID     sql.NullString
 	AllowAllFreeModels bool
+	AllowedModels      map[string]struct{}
 	RequestsPerMinute  sql.NullInt64
 	RequestsPerDay     sql.NullInt64
 	MaxConcurrent      sql.NullInt64
@@ -64,14 +65,17 @@ func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (
 	prefix := rawKey[:dot]
 	var principal APIKeyPrincipal
 	var storedHash []byte
+
 	err := a.db.QueryRowContext(ctx, `
-		SELECT id::text, project_id::text, key_hash, default_model_id::text,
-		       allow_all_free_models, requests_per_minute, requests_per_day, max_concurrent
-		FROM api_keys
-		WHERE key_prefix = $1
-		  AND status = 'active'
-		  AND revoked_at IS NULL
-		  AND (expires_at IS NULL OR expires_at > now())
+		SELECT k.id::text, k.project_id::text, k.key_hash, k.default_model_id::text,
+		       k.allow_all_free_models, k.requests_per_minute, k.requests_per_day, k.max_concurrent
+		FROM api_keys k
+		JOIN projects p ON p.id = k.project_id
+		WHERE k.key_prefix = $1
+		  AND k.status = 'active'
+		  AND k.revoked_at IS NULL
+		  AND (k.expires_at IS NULL OR k.expires_at > now())
+		  AND p.status = 'active'
 		LIMIT 1
 	`, prefix).Scan(
 		&principal.ID, &principal.ProjectID, &storedHash, &principal.DefaultModelID,
@@ -81,11 +85,65 @@ func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (
 	if err != nil {
 		return nil, err
 	}
+
 	actual := hashAPIKey(rawKey, a.pepper)
 	if !hmac.Equal(actual, storedHash) {
 		return nil, sql.ErrNoRows
 	}
+
+	principal.AllowedModels = make(map[string]struct{})
+	if principal.AllowAllFreeModels {
+		return &principal, nil
+	}
+
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT m.public_id
+		FROM api_key_model_scopes s
+		JOIN models m ON m.id = s.model_id
+		WHERE s.api_key_id = $1
+		  AND m.active = true
+		  AND m.is_free = true
+
+		UNION
+
+		SELECT m.public_id
+		FROM models m
+		WHERE $2::uuid IS NOT NULL
+		  AND m.id = $2::uuid
+		  AND m.active = true
+		  AND m.is_free = true
+	`, principal.ID, principal.DefaultModelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var publicID string
+		if err := rows.Scan(&publicID); err != nil {
+			return nil, err
+		}
+		publicID = strings.TrimSpace(publicID)
+		if publicID != "" {
+			principal.AllowedModels[publicID] = struct{}{}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return &principal, nil
+}
+
+func (p *APIKeyPrincipal) AllowsModel(modelID string) bool {
+	if p == nil {
+		return false
+	}
+	if p.AllowAllFreeModels {
+		return true
+	}
+	_, ok := p.AllowedModels[strings.TrimSpace(modelID)]
+	return ok
 }
 
 func hashAPIKey(rawKey, pepper string) []byte {
