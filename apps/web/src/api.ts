@@ -36,6 +36,28 @@ export type ApiKey={
 
 export type ApiKeyCreated=ApiKey&{api_key:string};
 
+export type ApiKeyCreateInput={
+  project_id:string;
+  name:string;
+  allow_all_free_models:boolean;
+  default_model_id:string|null;
+  model_ids:string[];
+  requests_per_minute:number|null;
+  requests_per_day:number|null;
+  max_concurrent:number|null;
+  expires_at:string|null;
+};
+
+export type ApiKeyUpdateInput=Omit<ApiKeyCreateInput,"project_id">;
+
+export type ConsoleModel={
+  id:string;
+  public_id:string;
+  display_name:string;
+  context_length:number|null;
+  capabilities:Record<string,boolean>;
+};
+
 export type NexoraModel={
   id:string;
   object:string;
@@ -167,11 +189,13 @@ export const api={
     method:"POST",headers:mutationHeaders()
   }),
 
+  catalogModels:()=>rawJson<ConsoleModel[]>(`${CONTROL}/catalog/models`),
+
   keys:(projectId:string)=>rawJson<ApiKey[]>(`${CONTROL}/api-keys?project_id=${encodeURIComponent(projectId)}`),
-  createKey:(projectId:string,name:string)=>rawJson<ApiKeyCreated>(`${CONTROL}/api-keys`,{
-    method:"POST",headers:mutationHeaders(),body:JSON.stringify({project_id:projectId,name,allow_all_free_models:true})
+  createKey:(payload:ApiKeyCreateInput)=>rawJson<ApiKeyCreated>(`${CONTROL}/api-keys`,{
+    method:"POST",headers:mutationHeaders(),body:JSON.stringify(payload)
   }),
-  updateKey:(id:string,payload:Partial<Pick<ApiKey,"name"|"allow_all_free_models"|"default_model_id"|"model_ids"|"requests_per_minute"|"requests_per_day"|"max_concurrent"|"expires_at">>)=>rawJson<ApiKey>(`${CONTROL}/api-keys/${id}`,{
+  updateKey:(id:string,payload:Partial<ApiKeyUpdateInput>)=>rawJson<ApiKey>(`${CONTROL}/api-keys/${id}`,{
     method:"PATCH",headers:mutationHeaders(),body:JSON.stringify(payload)
   }),
   rotateKey:(id:string)=>rawJson<ApiKeyCreated>(`${CONTROL}/api-keys/${id}/rotate`,{
