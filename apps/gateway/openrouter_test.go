@@ -585,3 +585,43 @@ func TestChatHandlesConcurrentStreamingLoad(t *testing.T) {
 		t.Fatalf("healthy concurrent load should leave circuit closed, got %s", provider.breaker.State())
 	}
 }
+
+
+func TestListFreeModelsRetriesTransientCatalogFailure(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := attempts.Add(1)
+		if current == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"vendor/free-text","name":"Free Text","context_length":8192,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["text"]}}
+		]}`))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 2,
+			BaseDelay:   0,
+			MaxDelay:    0,
+		},
+		catalogTimeout: 2 * time.Second,
+	}
+
+	models, err := provider.ListFreeModels(context.Background())
+	if err != nil {
+		t.Fatalf("catalog retry failed: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected two catalog attempts, got %d", attempts.Load())
+	}
+	if len(models) != 1 || models[0].UpstreamID != "vendor/free-text" {
+		t.Fatalf("unexpected catalog %#v", models)
+	}
+}
