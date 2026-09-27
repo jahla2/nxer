@@ -23,7 +23,7 @@ Never commit `.env`, provider credentials, signing secrets, database passwords, 
 ## Client examples
 
 ```bash
-curl http://localhost/v1/chat/completions \
+curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $NEXORA_API_KEY" \
   -H "Content-Type: application/json" \
   -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000" \
@@ -32,13 +32,13 @@ curl http://localhost/v1/chat/completions \
 
 ```python
 from openai import OpenAI
-client = OpenAI(base_url="http://localhost/v1", api_key="nxa_live_...")
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="nxa_live_...")
 print(client.chat.completions.create(model="auto-free", messages=[{"role":"user","content":"Hello"}]))
 ```
 
 ```js
 import OpenAI from "openai";
-const client = new OpenAI({ baseURL: "http://localhost/v1", apiKey: "nxa_live_..." });
+const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "nxa_live_..." });
 const result = await client.chat.completions.create({ model: "auto-free", messages: [{ role: "user", content: "Hello" }] });
 ```
 
@@ -64,7 +64,7 @@ Start the full stack from the repository root:
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-The migration and bootstrap services run automatically and idempotently. Open `http://localhost:8080`. In the console enter the same `CONTROL_ADMIN_TOKEN` from `.env`. A Local Project is bootstrapped. Create an API key in the API Keys module; the UI saves the one-time raw key locally for Models and Playground.
+The tracked migration runner applies each SQL migration exactly once and safely skips already-applied versions. The local bootstrap then runs idempotently before the application services start. Open `http://localhost:8080`. In the console enter the same `CONTROL_ADMIN_TOKEN` from `.env`. A Local Project is bootstrapped. Create an API key in the API Keys module; the UI saves the one-time raw key locally for Models and Playground.
 
 Useful local endpoints:
 
@@ -75,3 +75,10 @@ Useful local endpoints:
 - Chat: `http://localhost:8080/v1/chat/completions`
 
 Stop with `docker compose -f infra/docker-compose.yml down`. Add `-v` only when you intentionally want to delete the local PostgreSQL volume.
+
+
+### Local service configuration
+
+The same root `.env` is injected into the Go gateway, FastAPI control plane, Celery worker/beat, migration runner, and local bootstrap. PostgreSQL reads `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`; Redis reads `REDIS_PASSWORD`; application services use `DATABASE_URL` and `REDIS_URL`. Keep these values consistent when changing local credentials.
+
+Long-running services use Docker's `unless-stopped` restart policy. Database migrations are tracked in `schema_migrations`, so restarting the stack does not reapply completed schema files.

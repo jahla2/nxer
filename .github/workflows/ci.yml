@@ -3,6 +3,7 @@ on:
   push:
     branches: ["main", "feature/**", "fix/**"]
   pull_request:
+
 jobs:
   gateway:
     runs-on: ubuntu-latest
@@ -10,10 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version: "1.23.x"}
+        with: {go-version: "1.26.x"}
       - run: go mod tidy
       - run: git diff --exit-code go.mod go.sum
       - run: go test ./...
+
   control-api:
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: apps/control-api}}
@@ -23,6 +25,18 @@ jobs:
         with: {python-version: "3.13"}
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: workers/tasks}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: pip install -e .
+      - run: python -m compileall -q .
+      - run: python -c "import worker; assert 'aggregate-usage-every-minute' in worker.app.conf.beat_schedule; assert 'cleanup-idempotency-hourly' in worker.app.conf.beat_schedule"
+
   web:
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: apps/web}}
@@ -32,3 +46,39 @@ jobs:
         with: {node-version: "22"}
       - run: npm install
       - run: npm run build
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: nexora
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nexora"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nexora
+      MIGRATIONS_DIR: ${{ github.workspace }}/migrations
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: sh infra/postgres/migrate.sh
+      - run: sh infra/postgres/migrate.sh
+      - name: Verify schema
+        run: |
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "4"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT is_nullable FROM information_schema.columns WHERE table_name='usage_daily' AND column_name='model_id'")" = "YES"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_daily' AND indexname='ux_usage_daily_dimensions'")" = "1"
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose -f infra/docker-compose.yml config

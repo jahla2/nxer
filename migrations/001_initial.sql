@@ -1,18 +1,98 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE TABLE users (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),email text NOT NULL,password_hash text NOT NULL,status text NOT NULL DEFAULT 'active',created_at timestamptz NOT NULL DEFAULT now());
-CREATE UNIQUE INDEX ux_users_lower_email ON users(lower(email));
-CREATE TABLE projects (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),user_id uuid NOT NULL REFERENCES users(id),name varchar(120) NOT NULL,status varchar(20) NOT NULL DEFAULT 'active',created_at timestamptz NOT NULL DEFAULT now());
-CREATE INDEX idx_projects_user_status ON projects(user_id,status);
-CREATE TABLE models (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),public_id text NOT NULL UNIQUE,upstream_id text NOT NULL UNIQUE,display_name text NOT NULL,active boolean NOT NULL DEFAULT true,is_free boolean NOT NULL DEFAULT false,capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
-CREATE INDEX idx_models_active_free ON models(active,is_free);
-CREATE TABLE api_keys (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),project_id uuid NOT NULL REFERENCES projects(id),name varchar(120) NOT NULL,key_prefix varchar(24) NOT NULL UNIQUE,key_hash bytea NOT NULL,status varchar(20) NOT NULL DEFAULT 'active',default_model_id uuid NULL REFERENCES models(id),allow_all_free_models boolean NOT NULL DEFAULT false,requests_per_minute integer,requests_per_day integer,max_concurrent integer,created_at timestamptz NOT NULL DEFAULT now(),last_used_at timestamptz NULL,expires_at timestamptz NULL,revoked_at timestamptz NULL);
-CREATE INDEX idx_api_keys_project_status ON api_keys(project_id,status);
-CREATE TABLE api_key_model_scopes (api_key_id uuid NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,model_id uuid NOT NULL REFERENCES models(id) ON DELETE CASCADE,PRIMARY KEY(api_key_id,model_id));
-CREATE TABLE usage_events (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),request_id text NOT NULL UNIQUE,api_key_id uuid NOT NULL REFERENCES api_keys(id),model_id uuid NULL REFERENCES models(id),status integer NOT NULL,ttft_ms integer NULL,latency_ms integer NULL,prompt_tokens integer NULL,completion_tokens integer NULL,created_at timestamptz NOT NULL DEFAULT now());
-CREATE INDEX idx_usage_events_key_created ON usage_events(api_key_id,created_at);
-CREATE INDEX idx_usage_events_model_created ON usage_events(model_id,created_at);
-CREATE TABLE idempotency_records (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),api_key_id uuid NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,idempotency_key text NOT NULL,request_hash bytea NOT NULL,status varchar(20) NOT NULL,response_status integer NULL,response_body jsonb NULL,expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(api_key_id,idempotency_key));
-CREATE INDEX idx_idempotency_expires ON idempotency_records(expires_at);
-CREATE TABLE audit_logs (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),actor_user_id uuid NULL REFERENCES users(id),action text NOT NULL,resource_type text NOT NULL,resource_id text NULL,metadata jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz NOT NULL DEFAULT now());
-CREATE INDEX idx_audit_actor_time ON audit_logs(actor_user_id,created_at);
-CREATE INDEX idx_audit_resource_time ON audit_logs(resource_type,resource_id,created_at);
+
+CREATE TABLE IF NOT EXISTS users (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    email text NOT NULL,
+    password_hash text NOT NULL,
+    status text NOT NULL DEFAULT 'active',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_lower_email ON users(lower(email));
+
+CREATE TABLE IF NOT EXISTS projects (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id uuid NOT NULL REFERENCES users(id),
+    name varchar(120) NOT NULL,
+    status varchar(20) NOT NULL DEFAULT 'active',
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_projects_user_status ON projects(user_id,status);
+
+CREATE TABLE IF NOT EXISTS models (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    public_id text NOT NULL UNIQUE,
+    upstream_id text NOT NULL UNIQUE,
+    display_name text NOT NULL,
+    active boolean NOT NULL DEFAULT true,
+    is_free boolean NOT NULL DEFAULT false,
+    capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_models_active_free ON models(active,is_free);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id uuid NOT NULL REFERENCES projects(id),
+    name varchar(120) NOT NULL,
+    key_prefix varchar(24) NOT NULL UNIQUE,
+    key_hash bytea NOT NULL,
+    status varchar(20) NOT NULL DEFAULT 'active',
+    default_model_id uuid NULL REFERENCES models(id),
+    allow_all_free_models boolean NOT NULL DEFAULT false,
+    requests_per_minute integer,
+    requests_per_day integer,
+    max_concurrent integer,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz NULL,
+    expires_at timestamptz NULL,
+    revoked_at timestamptz NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_project_status ON api_keys(project_id,status);
+
+CREATE TABLE IF NOT EXISTS api_key_model_scopes (
+    api_key_id uuid NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    model_id uuid NOT NULL REFERENCES models(id) ON DELETE CASCADE,
+    PRIMARY KEY(api_key_id,model_id)
+);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    request_id text NOT NULL UNIQUE,
+    api_key_id uuid NOT NULL REFERENCES api_keys(id),
+    model_id uuid NULL REFERENCES models(id),
+    status integer NOT NULL,
+    ttft_ms integer NULL,
+    latency_ms integer NULL,
+    prompt_tokens integer NULL,
+    completion_tokens integer NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_usage_events_key_created ON usage_events(api_key_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_model_created ON usage_events(model_id,created_at);
+
+CREATE TABLE IF NOT EXISTS idempotency_records (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    api_key_id uuid NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    idempotency_key text NOT NULL,
+    request_hash bytea NOT NULL,
+    status varchar(20) NOT NULL,
+    response_status integer NULL,
+    response_body jsonb NULL,
+    expires_at timestamptz NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE(api_key_id,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_records(expires_at);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id uuid NULL REFERENCES users(id),
+    action text NOT NULL,
+    resource_type text NOT NULL,
+    resource_id text NULL,
+    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_actor_time ON audit_logs(actor_user_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_resource_time ON audit_logs(resource_type,resource_id,created_at);
