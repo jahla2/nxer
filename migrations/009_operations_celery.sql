@@ -33,17 +33,12 @@ CREATE INDEX IF NOT EXISTS idx_background_job_runs_name_started
 CREATE INDEX IF NOT EXISTS idx_background_job_runs_status_started
     ON background_job_runs(status, started_at DESC);
 
-CREATE TABLE IF NOT EXISTS usage_aggregation_state (
-    name text PRIMARY KEY,
-    last_created_at timestamptz NOT NULL DEFAULT '1970-01-01 00:00:00+00',
-    last_event_id uuid NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
+ALTER TABLE usage_events
+    ADD COLUMN IF NOT EXISTS aggregated_at timestamptz NULL;
 
-INSERT INTO usage_aggregation_state (name)
-VALUES ('usage_daily')
-ON CONFLICT (name) DO NOTHING;
-
+CREATE INDEX IF NOT EXISTS idx_usage_events_unaggregated
+    ON usage_events(created_at, id)
+    WHERE aggregated_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_usage_events_created_at
     ON usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
