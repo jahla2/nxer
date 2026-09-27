@@ -9,6 +9,21 @@ from nexora_control.audit import write_audit
 from nexora_control.auth import UserPrincipal, get_current_user, require_csrf
 from nexora_control.config import Settings, get_settings
 from nexora_control.database import get_connection
+from nexora_control.gateway_cache import (
+    GatewayAuthCacheError,
+    invalidate_api_key_prefixes,
+    invalidate_api_key_prefixes_best_effort,
+)
+
+
+def _invalidate_gateway_auth_cache(prefixes: list[str]) -> None:
+    try:
+        invalidate_api_key_prefixes(prefixes)
+    except GatewayAuthCacheError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gateway authorization cache is unavailable. No project changes were applied.",
+        ) from exc
 
 
 router = APIRouter(tags=["console"])
@@ -145,14 +160,26 @@ def archive_project(
 
         cur.execute(
             """
-            UPDATE api_keys
-            SET status='revoked', revoked_at=COALESCE(revoked_at, now()), updated_at=now()
+            SELECT id, key_prefix
+            FROM api_keys
             WHERE project_id=%s AND status='active'
-            RETURNING id
+            FOR UPDATE
             """,
             (project_id,),
         )
-        revoked_ids = [str(item["id"]) for item in cur.fetchall()]
+        active_keys = cur.fetchall()
+        revoked_ids = [str(item["id"]) for item in active_keys]
+        revoked_prefixes = [item["key_prefix"] for item in active_keys]
+        _invalidate_gateway_auth_cache(revoked_prefixes)
+
+        cur.execute(
+            """
+            UPDATE api_keys
+            SET status='revoked', revoked_at=COALESCE(revoked_at, now()), updated_at=now()
+            WHERE project_id=%s AND status='active'
+            """,
+            (project_id,),
+        )
 
         write_audit(
             conn,
@@ -163,7 +190,9 @@ def archive_project(
             metadata={"revoked_api_key_ids": revoked_ids},
         )
         conn.commit()
-        return ProjectView(**row)
+
+    invalidate_api_key_prefixes_best_effort(revoked_prefixes)
+    return ProjectView(**row)
 
 
 @router.get("/usage")
