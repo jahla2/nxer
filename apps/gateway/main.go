@@ -17,7 +17,7 @@ var idempotencyGuard *IdempotencyGuard
 
 func main() {
 	var err error
-	apiKeyAuthenticator, err = NewAPIKeyAuthenticator(getenv("DATABASE_URL", ""), getenv("API_KEY_HASH_PEPPER", ""))
+	apiKeyAuthenticator, err = NewAPIKeyAuthenticator(getenv("DATABASE_URL", ""), getenv("REDIS_URL", ""), getenv("API_KEY_HASH_PEPPER", ""))
 	if err != nil { log.Fatalf("gateway authentication configuration invalid: %v", err) }
 	defer apiKeyAuthenticator.Close()
 	admissionController, err = NewAdmissionController(getenv("REDIS_URL", ""))
