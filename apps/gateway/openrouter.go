@@ -633,6 +633,9 @@ func (p *OpenRouterProvider) streamResponse(
 			}
 
 			if len(sanitized) > 0 {
+				if !started && !dataLine {
+					continue
+				}
 				if !started {
 					w.WriteHeader(http.StatusOK)
 					started = true
