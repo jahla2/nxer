@@ -182,3 +182,34 @@ def test_registration_creates_hashed_email_verification_token() -> None:
     assert b"nxa_ev_" not in bytes(token_hash)
     assert expires_at is not None
     assert used_at is None
+
+
+
+def test_password_reset_request_cooldown_does_not_issue_multiple_tokens() -> None:
+    client = TestClient(app)
+    email = unique_email("reset-cooldown")
+    register(client, email)
+
+    first = client.post("/auth/password-reset/request", json={"email": email})
+    assert first.status_code == 202
+    assert first.json()["reset_token"]
+
+    second = client.post("/auth/password-reset/request", json={"email": email})
+    assert second.status_code == 202
+    assert second.json()["message"] == first.json()["message"]
+    assert second.json()["reset_token"] is None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT count(*)
+                FROM password_reset_tokens t
+                JOIN users u ON u.id=t.user_id
+                WHERE lower(u.email)=%s
+                """,
+                (email,),
+            )
+            count = cursor.fetchone()[0]
+
+    assert count == 1
