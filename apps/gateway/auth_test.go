@@ -8,22 +8,22 @@ import (
 
 func TestExtractBearerToken(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	r.Header.Set("Authorization", "Bearer nxa_test")
-	if got := extractBearerToken(r); got != "nxa_test" {
+	r.Header.Set("Authorization", "Bearer nxa_live_0123456789ab.test")
+	if got := extractBearerToken(r); got != "nxa_live_0123456789ab.test" {
 		t.Fatalf("expected token, got %q", got)
 	}
 }
 
 func TestExtractBearerTokenRejectsMalformedHeader(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	r.Header.Set("Authorization", "nxa_test")
+	r.Header.Set("Authorization", "nxa_live_0123456789ab.test")
 	if got := extractBearerToken(r); got != "" {
 		t.Fatalf("expected empty token, got %q", got)
 	}
 }
 
 func TestHashAPIKeyMatchesControlPlaneAlgorithm(t *testing.T) {
-	got := hashAPIKey("nxa_test-secret", "pepper-a")
+	got := hashAPIKey("nxa_live_0123456789ab.test-secret", "pepper-a")
 	const want = "de26093327f3536df5fceb6df259eb218cf704bfb0c9ae83f4f20fe5cb21885c"
 	if hex := fmtHex(got); hex != want {
 		t.Fatalf("unexpected hash %s", hex)
