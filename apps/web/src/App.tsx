@@ -65,7 +65,7 @@ function AuthRoute({mode}:{mode:AuthRouteMode}){
     verifyToken={mode==="verify"?token:""}
     onAuthenticated={next=>{
       setUser(next);
-      navigate("/overview",{replace:true});
+      if(mode!=="verify")navigate("/overview",{replace:true});
     }}
     onPasswordResetComplete={()=>{
       setUser(null);
