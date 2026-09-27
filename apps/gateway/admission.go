@@ -85,6 +85,7 @@ func NewAdmissionController(redisURL string) (*AdmissionController, error) {
 }
 
 func (a *AdmissionController) Close() error { return a.client.Close() }
+func (a *AdmissionController) RedisClient() *redis.Client { return a.client }
 
 func (a *AdmissionController) Admit(ctx context.Context, p *APIKeyPrincipal) (*AdmissionLease, *APIError) {
 	if p == nil {
