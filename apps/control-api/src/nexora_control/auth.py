@@ -271,6 +271,7 @@ def register(
     email = normalize_email(str(payload.email))
     display_name = payload.display_name.strip()
     password_hash = hash_password(payload.password)
+    verification_token: str | None = None
 
     try:
         with get_connection() as connection:
@@ -288,6 +289,11 @@ def register(
                     "INSERT INTO projects (user_id, name, status) VALUES (%s, 'My Project', 'active')",
                     (user["id"],),
                 )
+                verification_token = _issue_email_verification_token(
+                    connection,
+                    str(user["id"]),
+                    settings,
+                )
                 access, refresh, csrf = _issue_session(
                     connection,
                     str(user["id"]),
@@ -297,6 +303,9 @@ def register(
             connection.commit()
     except UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists") from exc
+
+    if verification_token and settings.smtp_configured:
+        _send_verification_best_effort(settings, email, verification_token)
 
     _set_auth_cookies(response, access, refresh, csrf, settings)
     return _user_view(user)
