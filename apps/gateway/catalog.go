@@ -143,6 +143,15 @@ func slugModelName(value string) string {
 	}
 
 	result := strings.Trim(b.String(), "-")
+	parts := strings.Split(result, "-")
+	filtered := parts[:0]
+	for _, part := range parts {
+		if part == "" || part == openRouterProviderKey {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	result = strings.Join(filtered, "-")
 	if len(result) > 48 {
 		result = strings.Trim(result[:48], "-")
 	}
