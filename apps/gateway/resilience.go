@@ -120,13 +120,15 @@ type CircuitBreaker struct {
 	openDuration     time.Duration
 	openedAt         time.Time
 	halfOpenInFlight bool
+	generation       uint64
 	now              func() time.Time
 }
 
 type CircuitPermit struct {
-	breaker  *CircuitBreaker
-	halfOpen bool
-	once     sync.Once
+	breaker    *CircuitBreaker
+	halfOpen   bool
+	generation uint64
+	once       sync.Once
 }
 
 func NewCircuitBreaker(failureThreshold int, openDuration time.Duration) *CircuitBreaker {
@@ -167,6 +169,7 @@ func (b *CircuitBreaker) Acquire() (*CircuitPermit, bool) {
 		}
 		b.state = CircuitHalfOpen
 		b.halfOpenInFlight = false
+		b.generation++
 		fallthrough
 
 	case CircuitHalfOpen:
@@ -174,10 +177,17 @@ func (b *CircuitBreaker) Acquire() (*CircuitPermit, bool) {
 			return nil, false
 		}
 		b.halfOpenInFlight = true
-		return &CircuitPermit{breaker: b, halfOpen: true}, true
+		return &CircuitPermit{
+			breaker:    b,
+			halfOpen:   true,
+			generation: b.generation,
+		}, true
 
 	default:
-		return &CircuitPermit{breaker: b}, true
+		return &CircuitPermit{
+			breaker:    b,
+			generation: b.generation,
+		}, true
 	}
 }
 
@@ -190,9 +200,22 @@ func (p *CircuitPermit) Success() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
-		b.state = CircuitClosed
-		b.consecutiveFails = 0
-		b.halfOpenInFlight = false
+		if p.generation != b.generation {
+			return
+		}
+		if p.halfOpen {
+			if b.state != CircuitHalfOpen {
+				return
+			}
+			b.state = CircuitClosed
+			b.consecutiveFails = 0
+			b.halfOpenInFlight = false
+			b.generation++
+			return
+		}
+		if b.state == CircuitClosed {
+			b.consecutiveFails = 0
+		}
 	})
 }
 
@@ -205,18 +228,30 @@ func (p *CircuitPermit) Failure() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
+		if p.generation != b.generation {
+			return
+		}
+
 		if p.halfOpen {
+			if b.state != CircuitHalfOpen {
+				return
+			}
 			b.state = CircuitOpen
 			b.openedAt = b.now()
 			b.consecutiveFails = b.failureThreshold
 			b.halfOpenInFlight = false
+			b.generation++
 			return
 		}
 
+		if b.state != CircuitClosed {
+			return
+		}
 		b.consecutiveFails++
 		if b.consecutiveFails >= b.failureThreshold {
 			b.state = CircuitOpen
 			b.openedAt = b.now()
+			b.generation++
 		}
 	})
 }
@@ -230,11 +265,15 @@ func (p *CircuitPermit) Neutral() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
 
-		if p.halfOpen {
+		if p.generation != b.generation {
+			return
+		}
+		if p.halfOpen && b.state == CircuitHalfOpen {
 			b.state = CircuitOpen
 			b.openedAt = b.now()
+			b.halfOpenInFlight = false
+			b.generation++
 		}
-		b.halfOpenInFlight = false
 	})
 }
 
