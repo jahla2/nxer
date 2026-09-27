@@ -189,6 +189,7 @@ func (s *ModelCatalogStore) ListActiveFree(ctx context.Context) ([]Model, error)
 		FROM models
 		WHERE active=true
 		  AND is_free=true
+		  AND (public_id=$1 OR public_id LIKE 'nexora/%')
 		ORDER BY
 			CASE WHEN public_id=$1 THEN 0 ELSE 1 END,
 			public_id
