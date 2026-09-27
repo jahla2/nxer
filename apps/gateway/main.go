@@ -9,13 +9,19 @@ import (
 )
 
 var modelCatalog = NewModelCatalog()
+var apiKeyAuthenticator *APIKeyAuthenticator
 
 func main() {
+	var err error
+	apiKeyAuthenticator, err = NewAPIKeyAuthenticator(getenv("DATABASE_URL", ""), getenv("API_KEY_HASH_PEPPER", ""))
+	if err != nil { log.Fatalf("gateway authentication configuration invalid: %v", err) }
+	defer apiKeyAuthenticator.Close()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/ready", healthHandler)
-	mux.HandleFunc("/v1/models", modelsHandler)
-	mux.HandleFunc("/v1/chat/completions", chatHandler)
+	mux.Handle("/v1/models", authMiddleware(apiKeyAuthenticator, http.HandlerFunc(modelsHandler)))
+	mux.Handle("/v1/chat/completions", authMiddleware(apiKeyAuthenticator, http.HandlerFunc(chatHandler)))
 
 	server := &http.Server{
 		Addr: getenv("GATEWAY_ADDR", ":8080"),
