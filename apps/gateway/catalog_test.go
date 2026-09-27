@@ -7,8 +7,8 @@ import (
 )
 
 func TestPublicModelAliasIsStableAndProviderNeutral(t *testing.T) {
-	first := publicModelAlias("Free Text Model", "vendor/free-text:free")
-	second := publicModelAlias("Free Text Model", "vendor/free-text:free")
+	first := publicModelAlias("OpenRouter Free Text Model", "vendor/free-text:free")
+	second := publicModelAlias("OpenRouter Free Text Model", "vendor/free-text:free")
 
 	if first != second {
 		t.Fatalf("alias must be deterministic: %q != %q", first, second)
