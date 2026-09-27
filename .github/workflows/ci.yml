@@ -1,0 +1,32 @@
+name: ci
+on:
+  push:
+    branches: ["main", "feature/**", "fix/**"]
+  pull_request:
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: apps/gateway}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "1.23.x"}
+      - run: go test ./...
+  control-api:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: apps/control-api}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+  web:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: apps/web}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: "22"}
+      - run: npm install
+      - run: npm run build
