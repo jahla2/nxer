@@ -10,8 +10,8 @@ from usage_jobs import aggregate_usage, cleanup_housekeeping
 
 
 settings = WorkerSettings.from_env()
-broker = os.getenv("CELERY_BROKER_URL", settings.redis_url)
-backend = os.getenv("CELERY_RESULT_BACKEND", settings.redis_url)
+broker = os.getenv("CELERY_BROKER_URL") or settings.redis_url
+backend = os.getenv("CELERY_RESULT_BACKEND") or settings.redis_url
 
 app = Celery("nexora", broker=broker, backend=backend)
 app.conf.update(
