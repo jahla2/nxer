@@ -18,18 +18,30 @@ var usageRecorder *UsageRecorder
 func main() {
 	var err error
 	apiKeyAuthenticator, err = NewAPIKeyAuthenticator(getenv("DATABASE_URL", ""), getenv("REDIS_URL", ""), getenv("API_KEY_HASH_PEPPER", ""))
-	if err != nil { log.Fatalf("gateway authentication configuration invalid: %v", err) }
+	if err != nil {
+		gatewayLogger.Error("gateway authentication configuration invalid","event","gateway_config_invalid","component","authentication","error",err.Error())
+		os.Exit(1)
+	}
 	defer apiKeyAuthenticator.Close()
 	admissionController, err = NewAdmissionController(getenv("REDIS_URL", ""))
-	if err != nil { log.Fatalf("gateway admission configuration invalid: %v", err) }
+	if err != nil {
+		gatewayLogger.Error("gateway admission configuration invalid","event","gateway_config_invalid","component","admission","error",err.Error())
+		os.Exit(1)
+	}
 	defer admissionController.Close()
 	idempotencyGuard = NewIdempotencyGuard(admissionController.RedisClient())
 	usageRecorder, err = NewUsageRecorder(getenv("DATABASE_URL", ""))
 	if err != nil { gatewayLogger.Error("usage recorder configuration invalid","error",err.Error()); os.Exit(1) }
 	defer usageRecorder.Close()
 	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
-	if err != nil { log.Fatalf("gateway provider configuration invalid: %v",err) }
-	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil { log.Fatalf("initial free-model catalog sync failed: %v",err) }
+	if err != nil {
+		gatewayLogger.Error("gateway provider configuration invalid","event","gateway_config_invalid","component","provider","error",err.Error())
+		os.Exit(1)
+	}
+	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil {
+		gatewayLogger.Error("initial free-model catalog sync failed","event","model_sync_failed","error",err.Error())
+		os.Exit(1)
+	}
 	go syncModelCatalog(openRouterProvider,modelCatalog,time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute)
 
 	mux := http.NewServeMux()
@@ -88,50 +100,99 @@ func filterModelsForPrincipal(models []Model, principal *APIKeyPrincipal) []Mode
 }
 
 func chatHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost { writeRequestAPIError(w,r,newAPIError(http.StatusMethodNotAllowed,"method_not_allowed","NEXORA_METHOD_NOT_ALLOWED","Method not allowed.")); return }
+	if r.Method != http.MethodPost {
+		writeRequestAPIError(w,r,newAPIError(http.StatusMethodNotAllowed,"method_not_allowed","NEXORA_METHOD_NOT_ALLOWED","Method not allowed."))
+		return
+	}
 	req, apiErr := decodeChatCompletionRequest(w,r)
-	if apiErr != nil { writeRequestAPIError(w,r,apiErr); return }
+	if apiErr != nil {
+		writeRequestAPIError(w,r,apiErr)
+		return
+	}
 	principal, ok := r.Context().Value(apiKeyContextKey{}).(*APIKeyPrincipal)
-	if !ok { writeRequestAPIError(w,r,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
-	if _, ok := modelCatalog.Get(req.Model); !ok { writeRequestAPIError(w,r,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
-	if !principal.AllowsModel(req.Model) { writeRequestAPIError(w,r,newAPIError(http.StatusForbidden,"permission_error","NEXORA_MODEL_NOT_ALLOWED","This API key is not permitted to use the requested model.")); return }
+	if !ok {
+		writeRequestAPIError(w,r,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required."))
+		return
+	}
+	if _, ok := modelCatalog.Get(req.Model); !ok {
+		writeRequestAPIError(w,r,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available."))
+		return
+	}
+	if !principal.AllowsModel(req.Model) {
+		writeRequestAPIError(w,r,newAPIError(http.StatusForbidden,"permission_error","NEXORA_MODEL_NOT_ALLOWED","This API key is not permitted to use the requested model."))
+		return
+	}
 
 	idemDecision, idemErr := idempotencyGuard.Begin(r,principal,req)
-	if idemErr!=nil { writeRequestAPIError(w,r,idemErr); return }
-	if idemDecision.Replay!=nil { writeCachedIdempotentResponse(w,idemDecision.Replay); return }
+	if idemErr!=nil {
+		writeRequestAPIError(w,r,idemErr)
+		return
+	}
+	if idemDecision.Replay!=nil {
+		writeCachedIdempotentResponse(w,idemDecision.Replay)
+		return
+	}
 	reservation:=idemDecision.Reservation
 
 	lease, admissionErr := admissionController.Admit(r.Context(), principal)
 	if admissionErr != nil {
-		if reservation!=nil { reservation.Fail(context.WithoutCancel(r.Context())) }
-		writeRequestAPIError(w,r, admissionErr)
+		if reservation!=nil {
+			reservation.Fail(context.WithoutCancel(r.Context()))
+		}
+		writeRequestAPIError(w,r,admissionErr)
 		return
 	}
 	defer lease.Release(context.WithoutCancel(r.Context()))
 
 	if req.Stream {
-		if providerErr:=openRouterProvider.Chat(r.Context(),req,w); providerErr!=nil {
-			if reservation!=nil { reservation.Fail(context.WithoutCancel(r.Context())) }
+		metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,w)
+		enqueueUsageEvent(r,principal,req,metrics,providerErr)
+		if providerErr!=nil {
+			if reservation!=nil {
+				reservation.Fail(context.WithoutCancel(r.Context()))
+			}
 			writeRequestAPIError(w,r,providerErr)
+			return
+		}
+		if metrics==nil || !metrics.Completed {
+			if reservation!=nil {
+				reservation.Fail(context.WithoutCancel(r.Context()))
+			}
 			return
 		}
 		if reservation!=nil {
 			if finalizeErr:=reservation.CompleteStream(context.WithoutCancel(r.Context())); finalizeErr!=nil {
-				log.Printf("idempotency stream finalization failed code=%s",finalizeErr.Code)
+				gatewayLogger.Warn(
+					"idempotency stream finalization failed",
+					"event","idempotency_finalize_failed",
+					"request_id",requestIDFromContext(r.Context()),
+					"code",finalizeErr.Code,
+				)
 			}
 		}
 		return
 	}
 
 	if reservation==nil {
-		if providerErr:=openRouterProvider.Chat(r.Context(),req,w); providerErr!=nil { writeRequestAPIError(w,r,providerErr); return }
+		metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,w)
+		enqueueUsageEvent(r,principal,req,metrics,providerErr)
+		if providerErr!=nil {
+			writeRequestAPIError(w,r,providerErr)
+		}
 		return
 	}
 
 	buffered:=NewBufferedResponseWriter()
-	if providerErr:=openRouterProvider.Chat(r.Context(),req,buffered); providerErr!=nil {
+	metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,buffered)
+	enqueueUsageEvent(r,principal,req,metrics,providerErr)
+	if providerErr!=nil {
 		reservation.Fail(context.WithoutCancel(r.Context()))
 		writeRequestAPIError(w,r,providerErr)
+		return
+	}
+	if metrics==nil || !metrics.Completed {
+		reservation.Fail(context.WithoutCancel(r.Context()))
+		writeRequestAPIError(w,r,newAPIError(http.StatusBadGateway,"upstream_error","NEXORA_UPSTREAM_ERROR","Upstream provider response did not complete."))
 		return
 	}
 	if finalizeErr:=reservation.Complete(
@@ -140,9 +201,61 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		buffered.Header().Get("Content-Type"),
 		buffered.Body(),
 	); finalizeErr!=nil {
-		log.Printf("idempotency response finalization failed code=%s",finalizeErr.Code)
+		gatewayLogger.Warn(
+			"idempotency response finalization failed",
+			"event","idempotency_finalize_failed",
+			"request_id",requestIDFromContext(r.Context()),
+			"code",finalizeErr.Code,
+		)
 	}
 	buffered.FlushTo(w)
+}
+
+func enqueueUsageEvent(
+	r *http.Request,
+	principal *APIKeyPrincipal,
+	req *ChatCompletionRequest,
+	metrics *ProviderMetrics,
+	providerErr *APIError,
+) {
+	if usageRecorder==nil || r==nil || principal==nil || req==nil {
+		return
+	}
+	statusCode:=http.StatusOK
+	var ttft,latency,promptTokens,completionTokens *int
+	if metrics!=nil {
+		statusCode=metrics.Status
+		ttft=metrics.TTFTMS
+		latency=metrics.LatencyMS
+		promptTokens=metrics.PromptTokens
+		completionTokens=metrics.CompletionTokens
+	}
+	if providerErr!=nil {
+		statusCode=providerErr.Status
+	}
+	requestID:=requestIDFromContext(r.Context())
+	if requestID=="" {
+		requestID=newRequestID()
+	}
+	if !usageRecorder.Enqueue(UsageEvent{
+		RequestID:requestID,
+		APIKeyID:principal.ID,
+		ModelPublicID:req.Model,
+		Status:statusCode,
+		TTFTMS:ttft,
+		LatencyMS:latency,
+		PromptTokens:promptTokens,
+		CompletionTokens:completionTokens,
+	}) {
+		gatewayLogger.Warn(
+			"usage queue full",
+			"event","usage_enqueue_dropped",
+			"request_id",requestID,
+			"api_key_id",principal.ID,
+			"model",req.Model,
+			"status",statusCode,
+		)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
