@@ -87,7 +87,7 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 
 func readyHandler(w http.ResponseWriter, r *http.Request) {
 	ctx,cancel:=context.WithTimeout(r.Context(),2*time.Second); defer cancel()
-	if apiKeyAuthenticator==nil || admissionController==nil || usageRecorder==nil || modelCatalogStore==nil ||
+	if apiKeyAuthenticator==nil || admissionController==nil || inferenceProvider==nil || usageRecorder==nil || modelCatalogStore==nil ||
 		apiKeyAuthenticator.Ping(ctx)!=nil ||
 		admissionController.RedisClient().Ping(ctx).Err()!=nil ||
 		usageRecorder.Ping(ctx)!=nil ||
