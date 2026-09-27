@@ -184,11 +184,31 @@ func (p *OpenRouterProvider) Chat(
 		)
 	}
 
+	permit, allowed := p.acquireCircuitPermit()
+	if !allowed {
+		gatewayLogger.Warn(
+			"provider circuit open",
+			"event", "provider_circuit_open",
+			"request_id", requestIDFromContext(ctx),
+			"provider", p.Key(),
+		)
+		return metricsFromStart(start, http.StatusServiceUnavailable, false), newAPIError(
+			http.StatusServiceUnavailable,
+			"service_unavailable",
+			"NEXORA_PROVIDER_CIRCUIT_OPEN",
+			"Model provider is temporarily unavailable.",
+		)
+	}
+
+	requestCtx, cancel := p.withRequestTimeout(ctx, req.Stream)
+	defer cancel()
+
 	upstreamReq := *req
 	upstreamReq.Model = route.UpstreamID
 
 	payload, err := json.Marshal(upstreamReq)
 	if err != nil {
+		permit.Neutral()
 		return metricsFromStart(start, http.StatusInternalServerError, false), newAPIError(
 			http.StatusInternalServerError,
 			"server_error",
@@ -197,60 +217,248 @@ func (p *OpenRouterProvider) Chat(
 		)
 	}
 
-	upReq, err := p.newRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
-			http.StatusBadGateway,
-			"upstream_error",
-			"NEXORA_UPSTREAM_ERROR",
-			"Unable to create upstream request.",
-		)
+	policy := p.effectiveRetryPolicy()
+	if permit != nil && permit.halfOpen {
+		policy.MaxAttempts = 1
 	}
-	if req.Stream {
+
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		resp, wroteRequest, requestErr := p.doChatAttempt(
+			requestCtx,
+			payload,
+			req.Stream,
+		)
+
+		if requestErr != nil {
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(requestErr, context.Canceled) {
+				permit.Neutral()
+				return metricsFromStart(start, 499, false), nil
+			}
+
+			apiErr := newAPIError(
+				http.StatusBadGateway,
+				"upstream_error",
+				"NEXORA_UPSTREAM_ERROR",
+				"Upstream provider request failed.",
+			)
+			if errors.Is(requestCtx.Err(), context.DeadlineExceeded) ||
+				errors.Is(requestErr, context.DeadlineExceeded) {
+				apiErr = newAPIError(
+					http.StatusGatewayTimeout,
+					"upstream_error",
+					"NEXORA_UPSTREAM_TIMEOUT",
+					"Upstream provider timed out.",
+				)
+			}
+
+			canRetry := !wroteRequest &&
+				attempt < policy.MaxAttempts &&
+				requestCtx.Err() == nil
+			if canRetry {
+				delay := policy.Backoff(attempt, "")
+				logProviderRetry(ctx, p.Key(), attempt, policy.MaxAttempts, delay, "transport_error")
+				if err := sleepWithContext(requestCtx, delay); err == nil {
+					continue
+				}
+			}
+
+			permit.Failure()
+			return metricsFromStart(start, apiErr.Status, false), apiErr
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			statusCode := resp.StatusCode
+			retryAfter := resp.Header.Get("Retry-After")
+			drainAndClose(resp.Body)
+
+			apiErr := mapUpstreamStatus(statusCode)
+			canRetry := isRetryableProviderStatus(statusCode) &&
+				attempt < policy.MaxAttempts &&
+				requestCtx.Err() == nil
+			if canRetry {
+				delay := policy.Backoff(attempt, retryAfter)
+				logProviderRetry(
+					ctx,
+					p.Key(),
+					attempt,
+					policy.MaxAttempts,
+					delay,
+					"status_"+strconv.Itoa(statusCode),
+				)
+				if err := sleepWithContext(requestCtx, delay); err == nil {
+					continue
+				}
+			}
+
+			if isRetryableProviderStatus(statusCode) {
+				permit.Failure()
+			} else {
+				permit.Success()
+			}
+			return metricsFromStart(start, apiErr.Status, false), apiErr
+		}
+
+		if req.Stream {
+			contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+			if !strings.Contains(contentType, "text/event-stream") {
+				drainAndClose(resp.Body)
+				permit.Failure()
+				return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
+					http.StatusBadGateway,
+					"upstream_error",
+					"NEXORA_UPSTREAM_INVALID_RESPONSE",
+					"Upstream provider returned an invalid streaming response.",
+				)
+			}
+
+			metrics, apiErr := p.streamResponse(
+				requestCtx,
+				resp,
+				route.ID,
+				w,
+				start,
+			)
+			_ = resp.Body.Close()
+
+			if apiErr != nil {
+				permit.Failure()
+				return metrics, apiErr
+			}
+			if metrics == nil {
+				permit.Failure()
+				return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
+					http.StatusBadGateway,
+					"upstream_error",
+					"NEXORA_UPSTREAM_ERROR",
+					"Upstream provider response did not complete.",
+				)
+			}
+			if metrics.Status == 499 {
+				permit.Neutral()
+				return metrics, nil
+			}
+			if !metrics.Completed {
+				permit.Failure()
+				return metrics, nil
+			}
+
+			permit.Success()
+			return metrics, nil
+		}
+
+		metrics, apiErr := p.jsonResponse(resp, route.ID, w, start)
+		_ = resp.Body.Close()
+		if apiErr != nil || metrics == nil || !metrics.Completed {
+			permit.Failure()
+			return metrics, apiErr
+		}
+
+		permit.Success()
+		return metrics, nil
+	}
+
+	permit.Failure()
+	return metricsFromStart(start, http.StatusServiceUnavailable, false), newAPIError(
+		http.StatusServiceUnavailable,
+		"service_unavailable",
+		"NEXORA_UPSTREAM_ERROR",
+		"Model provider is temporarily unavailable.",
+	)
+}
+
+func (p *OpenRouterProvider) acquireCircuitPermit() (*CircuitPermit, bool) {
+	if p.breaker == nil {
+		return &CircuitPermit{}, true
+	}
+	return p.breaker.Acquire()
+}
+
+func (p *OpenRouterProvider) effectiveRetryPolicy() RetryPolicy {
+	policy := p.retryPolicy
+	if policy.MaxAttempts < 1 {
+		policy.MaxAttempts = 1
+	}
+	if policy.MaxAttempts > 4 {
+		policy.MaxAttempts = 4
+	}
+	if policy.MaxDelay < policy.BaseDelay {
+		policy.MaxDelay = policy.BaseDelay
+	}
+	return policy
+}
+
+func (p *OpenRouterProvider) withRequestTimeout(
+	ctx context.Context,
+	stream bool,
+) (context.Context, context.CancelFunc) {
+	timeout := p.requestTimeout
+	if stream {
+		timeout = p.streamTimeout
+	}
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (p *OpenRouterProvider) doChatAttempt(
+	ctx context.Context,
+	payload []byte,
+	stream bool,
+) (*http.Response, bool, error) {
+	wroteRequest := false
+	trace := &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wroteRequest = true
+			}
+		},
+	}
+
+	attemptCtx := httptrace.WithClientTrace(ctx, trace)
+	upReq, err := p.newRequest(
+		attemptCtx,
+		http.MethodPost,
+		"/chat/completions",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
 
 	resp, err := p.client.Do(upReq)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return metricsFromStart(start, http.StatusGatewayTimeout, false), newAPIError(
-				http.StatusGatewayTimeout,
-				"upstream_error",
-				"NEXORA_UPSTREAM_TIMEOUT",
-				"Upstream provider timed out.",
-			)
-		}
-		if errors.Is(err, context.Canceled) {
-			return metricsFromStart(start, 499, false), nil
-		}
-		return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
-			http.StatusBadGateway,
-			"upstream_error",
-			"NEXORA_UPSTREAM_ERROR",
-			"Upstream provider request failed.",
-		)
-	}
-	defer resp.Body.Close()
+	return resp, wroteRequest, err
+}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		apiErr := mapUpstreamStatus(resp.StatusCode)
-		return metricsFromStart(start, apiErr.Status, false), apiErr
-	}
+func logProviderRetry(
+	ctx context.Context,
+	provider string,
+	attempt int,
+	maxAttempts int,
+	delay time.Duration,
+	reason string,
+) {
+	gatewayLogger.Warn(
+		"provider request retry",
+		"event", "provider_retry",
+		"request_id", requestIDFromContext(ctx),
+		"provider", provider,
+		"attempt", attempt,
+		"max_attempts", maxAttempts,
+		"delay_ms", delay.Milliseconds(),
+		"reason", reason,
+	)
+}
 
-	if req.Stream {
-		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-		if !strings.Contains(contentType, "text/event-stream") {
-			return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
-				http.StatusBadGateway,
-				"upstream_error",
-				"NEXORA_UPSTREAM_INVALID_RESPONSE",
-				"Upstream provider returned an invalid streaming response.",
-			)
-		}
-		return p.streamResponse(ctx, resp, route.ID, w, start)
+func drainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
 	}
-
-	return p.jsonResponse(resp, route.ID, w, start)
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 32<<10))
+	_ = body.Close()
 }
 
 func (p *OpenRouterProvider) jsonResponse(
