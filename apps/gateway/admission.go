@@ -117,7 +117,10 @@ func (a *AdmissionController) Admit(ctx context.Context, p *APIKeyPrincipal) (*A
 	}
 	if len(result)!=2 { return nil,newAPIError(503,"service_unavailable","NEXORA_ADMISSION_UNAVAILABLE","Request admission service returned an invalid result.") }
 	allowed, ok := result[0].(int64)
-	if !ok || allowed != 1 {
+	if !ok {
+		return nil,newAPIError(503,"service_unavailable","NEXORA_ADMISSION_UNAVAILABLE","Request admission service returned an invalid result.")
+	}
+	if allowed != 1 {
 		code := int64(0)
 		if len(result)>1 { code,_ = result[1].(int64) }
 		return nil, admissionLimitError(code)
