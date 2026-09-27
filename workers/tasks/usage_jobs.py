@@ -9,41 +9,17 @@ from psycopg.rows import dict_row
 from settings import WorkerSettings
 
 
-_AGGREGATION_NAME = "usage_daily"
-_ZERO_UUID = "00000000-0000-0000-0000-000000000000"
-
-
 def aggregate_usage(settings: WorkerSettings) -> dict[str, Any]:
     total_events = 0
     total_dimensions = 0
     batches = 0
+    caught_up = True
 
     with psycopg.connect(settings.database_url) as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute("SELECT pg_try_advisory_xact_lock(hashtext('nexora.usage.aggregate')) AS locked")
         lock_row = cur.fetchone()
         if not lock_row or not lock_row["locked"]:
             return {"skipped": True, "reason": "aggregation_already_running"}
-
-        cur.execute(
-            """
-            INSERT INTO usage_aggregation_state (name)
-            VALUES (%s)
-            ON CONFLICT (name) DO NOTHING
-            """,
-            (_AGGREGATION_NAME,),
-        )
-        cur.execute(
-            """
-            SELECT last_created_at, last_event_id
-            FROM usage_aggregation_state
-            WHERE name=%s
-            FOR UPDATE
-            """,
-            (_AGGREGATION_NAME,),
-        )
-        state = cur.fetchone()
-        last_created_at = state["last_created_at"]
-        last_event_id = state["last_event_id"]
 
         for _ in range(settings.usage_aggregation_max_batches):
             cur.execute(
@@ -57,8 +33,9 @@ def aggregate_usage(settings: WorkerSettings) -> dict[str, Any]:
                         prompt_tokens,
                         completion_tokens
                     FROM usage_events
-                    WHERE (created_at, id) > (%s, %s)
+                    WHERE aggregated_at IS NULL
                     ORDER BY created_at, id
+                    FOR UPDATE SKIP LOCKED
                     LIMIT %s
                 ),
                 upserted AS (
@@ -85,42 +62,39 @@ def aggregate_usage(settings: WorkerSettings) -> dict[str, Any]:
                         completion_tokens=usage_daily.completion_tokens + EXCLUDED.completion_tokens,
                         updated_at=now()
                     RETURNING 1
+                ),
+                marked AS (
+                    UPDATE usage_events event
+                    SET aggregated_at=now()
+                    FROM batch
+                    WHERE event.id=batch.id
+                    RETURNING event.id
                 )
                 SELECT
                     (SELECT count(*) FROM batch) AS event_count,
                     (SELECT count(*) FROM upserted) AS dimension_count,
-                    (SELECT created_at FROM batch ORDER BY created_at DESC, id DESC LIMIT 1)
-                        AS last_created_at,
-                    (SELECT id FROM batch ORDER BY created_at DESC, id DESC LIMIT 1)
-                        AS last_event_id
+                    (SELECT count(*) FROM marked) AS marked_count
                 """,
-                (
-                    last_created_at,
-                    last_event_id,
-                    settings.usage_aggregation_batch_size,
-                ),
+                (settings.usage_aggregation_batch_size,),
             )
             result = cur.fetchone()
             event_count = int(result["event_count"] or 0)
-            if event_count == 0:
-                break
+            marked_count = int(result["marked_count"] or 0)
 
-            last_created_at = result["last_created_at"]
-            last_event_id = result["last_event_id"]
-            cur.execute(
-                """
-                UPDATE usage_aggregation_state
-                SET last_created_at=%s,
-                    last_event_id=%s,
-                    updated_at=now()
-                WHERE name=%s
-                """,
-                (last_created_at, last_event_id, _AGGREGATION_NAME),
-            )
+            if event_count != marked_count:
+                raise RuntimeError("usage aggregation did not mark every selected event")
+
+            if event_count == 0:
+                caught_up = True
+                break
 
             total_events += event_count
             total_dimensions += int(result["dimension_count"] or 0)
             batches += 1
+            caught_up = event_count < settings.usage_aggregation_batch_size
+
+            if caught_up:
+                break
 
         conn.commit()
 
@@ -129,9 +103,7 @@ def aggregate_usage(settings: WorkerSettings) -> dict[str, Any]:
         "dimensions": total_dimensions,
         "batches": batches,
         "batch_size": settings.usage_aggregation_batch_size,
-        "caught_up": total_events < settings.usage_aggregation_batch_size
-        if batches <= 1
-        else total_events < settings.usage_aggregation_batch_size * batches,
+        "caught_up": caught_up,
     }
 
 
@@ -200,20 +172,16 @@ def cleanup_housekeeping(settings: WorkerSettings) -> dict[str, Any]:
             (),
         )
 
+        # Never delete raw request metadata until the daily aggregate transaction
+        # has marked the event as processed.
         deleted_usage_events = _delete_batches(
             cur,
             """
-            WITH cursor_state AS (
-                SELECT last_created_at, last_event_id
-                FROM usage_aggregation_state
-                WHERE name='usage_daily'
-            ),
-            doomed AS (
-                SELECT ue.ctid
-                FROM usage_events ue
-                CROSS JOIN cursor_state state
-                WHERE ue.created_at < now() - make_interval(days => %s)
-                  AND (ue.created_at, ue.id) <= (state.last_created_at, state.last_event_id)
+            WITH doomed AS (
+                SELECT ctid
+                FROM usage_events
+                WHERE aggregated_at IS NOT NULL
+                  AND created_at < now() - make_interval(days => %s)
                 LIMIT %s
             )
             DELETE FROM usage_events
