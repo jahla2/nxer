@@ -74,6 +74,7 @@ jobs:
       API_KEY_HASH_PEPPER: test-api-key-pepper-that-is-longer-than-thirty-two-characters
       ENVIRONMENT: test
       DEV_EXPOSE_PASSWORD_RESET_TOKEN: "true"
+      DEV_EXPOSE_EMAIL_VERIFICATION_TOKEN: "true"
       LOCAL_BOOTSTRAP_ENABLED: "false"
     defaults: {run: {working-directory: apps/control-api}}
     steps:
@@ -131,11 +132,12 @@ jobs:
       - run: sh infra/postgres/migrate.sh
       - name: Verify schema
         run: |
-          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "7"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "8"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT is_nullable FROM information_schema.columns WHERE table_name='usage_daily' AND column_name='model_id'")" = "YES"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_daily' AND indexname='ux_usage_daily_dimensions'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='models' AND column_name='provider_key'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='models' AND column_name='context_length'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='email_verification_tokens'")" = "1"
 
   compose-config:
     runs-on: ubuntu-latest

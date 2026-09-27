@@ -114,6 +114,16 @@ export type HealthResponse={
   service?:string;
 };
 
+export type PasswordResetRequested={
+  message:string;
+  reset_token?:string|null;
+};
+
+export type EmailVerificationRequested={
+  message:string;
+  verification_token?:string|null;
+};
+
 export type ChatCompletion={
   id:string;
   object?:string;
@@ -174,6 +184,18 @@ export const api={
       throw new Error(body?.detail||`Request failed (${response.status})`);
     }
   }),
+  requestPasswordReset:(email:string)=>rawJson<PasswordResetRequested>(`${CONTROL}/auth/password-reset/request`,{
+    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email})
+  },false),
+  confirmPasswordReset:(token:string,new_password:string)=>rawJson<void>(`${CONTROL}/auth/password-reset/confirm`,{
+    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token,new_password})
+  },false),
+  requestEmailVerification:()=>rawJson<EmailVerificationRequested>(`${CONTROL}/auth/email-verification/request`,{
+    method:"POST",headers:mutationHeaders()
+  }),
+  confirmEmailVerification:(token:string)=>rawJson<User>(`${CONTROL}/auth/email-verification/confirm`,{
+    method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token})
+  },false),
 
   controlHealth:()=>rawJson<HealthResponse>(`${CONTROL}/health`),
   gatewayHealth:()=>rawJson<HealthResponse>("/health"),

@@ -3,6 +3,7 @@ import {createRoot} from "react-dom/client";
 import {api,Project,ApiKey,ApiKeyUpdateInput,ConsoleModel,User} from "./api";
 import {AppShell,ConsoleModule} from "./components/AppShell";
 import {ApiKeyPolicyForm} from "./components/ApiKeyPolicyForm";
+import {AuthScreen} from "./components/AuthScreen";
 import {OverviewPage} from "./pages/OverviewPage";
 import {ProjectsPage} from "./pages/ProjectsPage";
 import {ApiKeysPage} from "./pages/ApiKeysPage";
@@ -25,10 +26,10 @@ function Dialog({title,children,onClose,wide=false}:{title:string;children:React
 
 function App(){
  const [user,setUser]=useState<User|null|undefined>(undefined);
- const [authMode,setAuthMode]=useState<"login"|"register">("login");
- const [email,setEmail]=useState("");
- const [password,setPassword]=useState("");
- const [displayName,setDisplayName]=useState("");
+ const [authActionOpen,setAuthActionOpen]=useState(()=>{
+   const params=new URLSearchParams(window.location.search);
+   return params.has("reset_password")||params.has("verify_email");
+ });
 
  const [active,setActive]=useState<ConsoleModule>("Overview");
  const [key,setKey]=useState("");
@@ -77,22 +78,6 @@ function App(){
    loadCatalogModels().catch(()=>setCatalogModels([]));
  },[user]);
  useEffect(()=>{loadKeys().catch(()=>setKeys([]))},[user,projectId]);
-
- async function submitAuth(event:React.FormEvent){
-   event.preventDefault();setBusy(true);setError("");
-   try{
-     const next=authMode==="register"
-       ?await api.register(displayName,email,password)
-       :await api.login(email,password);
-     setUser(next);
-     setPassword("");
-     setActive("Overview");
-   }catch(err){
-     setError(err instanceof Error?err.message:String(err));
-   }finally{
-     setBusy(false);
-   }
- }
 
  async function logout(){
    try{await api.logout()}
@@ -240,7 +225,7 @@ function App(){
      case "Requests":
        return <RequestsPage/>;
      case "Settings":
-       return <SettingsPage/>;
+       return <SettingsPage onUserUpdated={setUser}/>;
      case "Status":
        return <StatusPage/>;
    }
@@ -250,25 +235,25 @@ function App(){
    return <main className="session-loading"><div className="loading-card"><span className="spinner"/>Loading session…</div></main>;
  }
 
- if(!user){
-   return <main className="shell auth-shell">
-     <section className="panel auth-panel">
-       <p className="eyebrow">NEXORA AI</p>
-       <h1>{authMode==="login"?"Sign in":"Create account"}</h1>
-       <p className="subtitle">Access your Nexora developer console.</p>
-       <form onSubmit={submitAuth}>
-         {authMode==="register"&&<label>Name<input value={displayName} onChange={event=>setDisplayName(event.target.value)} minLength={2} autoComplete="name" required/></label>}
-         <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required/></label>
-         <label>Password<input type="password" value={password} onChange={event=>setPassword(event.target.value)} minLength={authMode==="register"?12:1} autoComplete={authMode==="register"?"new-password":"current-password"} required/></label>
-         {authMode==="register"&&<p className="form-hint">Use at least 12 characters. Session credentials are stored in secure cookies.</p>}
-         {error&&<p className="error">{error}</p>}
-         <button disabled={busy} type="submit">{busy?"Please wait…":authMode==="login"?"Sign in":"Create account"}</button>
-       </form>
-       <button className="link-button" onClick={()=>{setAuthMode(authMode==="login"?"register":"login");setError("")}}>
-         {authMode==="login"?"Need an account? Register":"Already registered? Sign in"}
-       </button>
-     </section>
-   </main>;
+ if(!user||authActionOpen){
+   return <AuthScreen
+     sessionUser={user||null}
+     onAuthenticated={next=>{
+       setUser(next);
+       setError("");
+       setActive("Overview");
+     }}
+     onPasswordResetComplete={()=>{
+       setUser(null);
+       setProjects([]);
+       setKeys([]);
+       setCatalogModels([]);
+       setProjectId("");
+       setKey("");
+       setActive("Overview");
+     }}
+     onActionComplete={()=>setAuthActionOpen(false)}
+   />;
  }
 
  return <AppShell

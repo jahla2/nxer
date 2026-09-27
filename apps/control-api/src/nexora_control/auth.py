@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hmac
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
@@ -18,9 +19,15 @@ from nexora_control.auth_security import (
 )
 from nexora_control.config import Settings, get_settings
 from nexora_control.database import get_connection
+from nexora_control.email_delivery import (
+    EmailDeliveryError,
+    send_password_reset_email,
+    send_verification_email,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("nexora.auth")
 
 ACCESS_COOKIE = "nexora_access"
 REFRESH_COOKIE = "nexora_refresh"
@@ -60,6 +67,15 @@ class PasswordResetConfirm(BaseModel):
     new_password: str = Field(min_length=12, max_length=128)
 
 
+class EmailVerificationRequested(BaseModel):
+    message: str
+    verification_token: str | None = None
+
+
+class EmailVerificationConfirm(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
 @dataclass(frozen=True)
 class UserPrincipal:
     id: str
@@ -78,6 +94,44 @@ def _user_view(row: dict) -> UserView:
         role=row["role"],
         email_verified=row["email_verified"],
     )
+
+
+def _issue_email_verification_token(connection, user_id: str, settings: Settings) -> str:
+    raw_token = generate_session_token("nxa_ev")
+    connection.execute(
+        "UPDATE email_verification_tokens SET used_at=now() WHERE user_id=%s AND used_at IS NULL",
+        (user_id,),
+    )
+    connection.execute(
+        """
+        INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+        VALUES (%s,%s,%s)
+        """,
+        (
+            user_id,
+            hash_session_token(raw_token, settings.session_secret),
+            datetime.now(timezone.utc) + timedelta(hours=settings.email_verification_ttl_hours),
+        ),
+    )
+    return raw_token
+
+
+def _send_verification_best_effort(settings: Settings, email: str, token: str) -> bool:
+    try:
+        send_verification_email(settings, email, token)
+        return True
+    except EmailDeliveryError:
+        logger.warning("email verification delivery failed", extra={"event": "email_verification_delivery_failed"})
+        return False
+
+
+def _send_password_reset_best_effort(settings: Settings, email: str, token: str) -> bool:
+    try:
+        send_password_reset_email(settings, email, token)
+        return True
+    except EmailDeliveryError:
+        logger.warning("password reset delivery failed", extra={"event": "password_reset_delivery_failed"})
+        return False
 
 
 def _set_auth_cookies(
@@ -217,6 +271,7 @@ def register(
     email = normalize_email(str(payload.email))
     display_name = payload.display_name.strip()
     password_hash = hash_password(payload.password)
+    verification_token: str | None = None
 
     try:
         with get_connection() as connection:
@@ -234,6 +289,11 @@ def register(
                     "INSERT INTO projects (user_id, name, status) VALUES (%s, 'My Project', 'active')",
                     (user["id"],),
                 )
+                verification_token = _issue_email_verification_token(
+                    connection,
+                    str(user["id"]),
+                    settings,
+                )
                 access, refresh, csrf = _issue_session(
                     connection,
                     str(user["id"]),
@@ -243,6 +303,9 @@ def register(
             connection.commit()
     except UniqueViolation as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="An account with this email already exists") from exc
+
+    if verification_token and settings.smtp_configured:
+        _send_verification_best_effort(settings, email, verification_token)
 
     _set_auth_cookies(response, access, refresh, csrf, settings)
     return _user_view(user)
@@ -300,6 +363,99 @@ def me(current_user: UserPrincipal = Depends(get_current_user)) -> UserView:
         role=current_user.role,
         email_verified=current_user.email_verified,
     )
+
+
+@router.post(
+    "/email-verification/request",
+    response_model=EmailVerificationRequested,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_csrf)],
+)
+def request_email_verification(
+    current_user: UserPrincipal = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> EmailVerificationRequested:
+    if current_user.email_verified:
+        return EmailVerificationRequested(message="Email address is already verified.")
+
+    with get_connection() as connection:
+        raw_token = _issue_email_verification_token(connection, current_user.id, settings)
+        connection.commit()
+
+    delivered = settings.smtp_configured and _send_verification_best_effort(
+        settings,
+        current_user.email,
+        raw_token,
+    )
+    expose_dev_token = (
+        settings.environment.lower() in {"development", "test", "local"}
+        and settings.dev_expose_email_verification_token
+    )
+
+    if not delivered and not expose_dev_token:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Verification email could not be delivered. Please try again later.",
+        )
+
+    return EmailVerificationRequested(
+        message="Verification instructions are ready.",
+        verification_token=raw_token if expose_dev_token else None,
+    )
+
+
+@router.post("/email-verification/confirm", response_model=UserView)
+def confirm_email_verification(
+    payload: EmailVerificationConfirm,
+    settings: Settings = Depends(get_settings),
+) -> UserView:
+    token_hash = hash_session_token(payload.token, settings.session_secret)
+
+    with get_connection() as connection:
+        with connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    t.id AS token_id,
+                    t.user_id,
+                    u.id,
+                    u.email,
+                    u.display_name,
+                    u.role,
+                    u.email_verified
+                FROM email_verification_tokens t
+                JOIN users u ON u.id = t.user_id
+                WHERE t.token_hash=%s
+                  AND t.used_at IS NULL
+                  AND t.expires_at > now()
+                  AND u.status='active'
+                FOR UPDATE OF t, u
+                """,
+                (token_hash,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email verification token is invalid or expired",
+                )
+
+            cursor.execute(
+                "UPDATE users SET email_verified=true, updated_at=now() WHERE id=%s",
+                (row["user_id"],),
+            )
+            cursor.execute(
+                """
+                UPDATE email_verification_tokens
+                SET used_at=COALESCE(used_at, now())
+                WHERE user_id=%s AND used_at IS NULL
+                """,
+                (row["user_id"],),
+            )
+            row["email_verified"] = True
+        connection.commit()
+
+    return _user_view(row)
 
 
 @router.post("/refresh", response_model=UserView)
@@ -398,32 +554,57 @@ def request_password_reset(
     with get_connection() as connection:
         with connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
-                "SELECT id FROM users WHERE lower(email)=%s AND status='active' LIMIT 1",
+                "SELECT id, email FROM users WHERE lower(email)=%s AND status='active' LIMIT 1",
                 (email,),
             )
             user = cursor.fetchone()
             if user is not None:
-                raw_token = generate_session_token("nxa_pr")
-                cursor.execute(
-                    "UPDATE password_reset_tokens SET used_at=now() WHERE user_id=%s AND used_at IS NULL",
-                    (user["id"],),
-                )
                 cursor.execute(
                     """
-                    INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-                    VALUES (%s,%s,%s)
+                    SELECT created_at
+                    FROM password_reset_tokens
+                    WHERE user_id=%s
+                    ORDER BY created_at DESC
+                    LIMIT 1
                     """,
-                    (
-                        user["id"],
-                        hash_session_token(raw_token, settings.session_secret),
-                        datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_ttl_minutes),
-                    ),
+                    (user["id"],),
                 )
+                latest = cursor.fetchone()
+                cooldown_cutoff = datetime.now(timezone.utc) - timedelta(
+                    seconds=settings.password_reset_request_cooldown_seconds
+                )
+                can_issue = latest is None or latest["created_at"] <= cooldown_cutoff
+
+                if can_issue:
+                    raw_token = generate_session_token("nxa_pr")
+                    cursor.execute(
+                        "UPDATE password_reset_tokens SET used_at=now() WHERE user_id=%s AND used_at IS NULL",
+                        (user["id"],),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+                        VALUES (%s,%s,%s)
+                        """,
+                        (
+                            user["id"],
+                            hash_session_token(raw_token, settings.session_secret),
+                            datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_ttl_minutes),
+                        ),
+                    )
         connection.commit()
 
+    if raw_token and user is not None and settings.smtp_configured:
+        _send_password_reset_best_effort(settings, user["email"], raw_token)
+
+    expose_dev_token = (
+        raw_token
+        and settings.environment.lower() in {"development", "test", "local"}
+        and settings.dev_expose_password_reset_token
+    )
     return PasswordResetRequested(
         message="If the account exists, password reset instructions are available.",
-        reset_token=raw_token if raw_token and settings.environment.lower() in {"development", "test", "local"} and settings.dev_expose_password_reset_token else None,
+        reset_token=raw_token if expose_dev_token else None,
     )
 
 

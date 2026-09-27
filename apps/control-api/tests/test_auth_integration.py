@@ -2,6 +2,7 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from nexora_control.database import get_connection
 from nexora_control.main import app
 
 
@@ -115,3 +116,100 @@ def test_password_reset_revokes_existing_session_and_changes_password() -> None:
     assert client.get("/auth/me").status_code == 401
     assert client.post("/auth/login", json={"email": email, "password": old_password}).status_code == 401
     assert client.post("/auth/login", json={"email": email, "password": new_password}).status_code == 200
+
+
+
+def test_email_verification_requires_csrf_and_updates_current_user() -> None:
+    client = TestClient(app)
+    email = unique_email("verify")
+    user = register(client, email)
+    assert user["email_verified"] is False
+
+    rejected = client.post("/auth/email-verification/request")
+    assert rejected.status_code == 403
+
+    requested = client.post(
+        "/auth/email-verification/request",
+        headers={"X-CSRF-Token": csrf(client)},
+    )
+    assert requested.status_code == 202, requested.text
+    verification_token = requested.json()["verification_token"]
+    assert verification_token
+    assert verification_token.startswith("nxa_ev_")
+
+    confirmed = client.post(
+        "/auth/email-verification/confirm",
+        json={"token": verification_token},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["email"] == email
+    assert confirmed.json()["email_verified"] is True
+
+    me = client.get("/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email_verified"] is True
+
+    replay = client.post(
+        "/auth/email-verification/confirm",
+        json={"token": verification_token},
+    )
+    assert replay.status_code == 400
+
+
+def test_registration_creates_hashed_email_verification_token() -> None:
+    client = TestClient(app)
+    email = unique_email("verification-storage")
+    user = register(client, email)
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT t.token_hash, t.expires_at, t.used_at
+                FROM email_verification_tokens t
+                JOIN users u ON u.id=t.user_id
+                WHERE lower(u.email)=%s
+                ORDER BY t.created_at DESC
+                LIMIT 1
+                """,
+                (email,),
+            )
+            row = cursor.fetchone()
+
+    assert row is not None
+    token_hash, expires_at, used_at = row
+    assert bytes(token_hash)
+    assert b"nxa_ev_" not in bytes(token_hash)
+    assert expires_at is not None
+    assert used_at is None
+
+
+
+def test_password_reset_request_cooldown_does_not_issue_multiple_tokens() -> None:
+    client = TestClient(app)
+    email = unique_email("reset-cooldown")
+    register(client, email)
+
+    first = client.post("/auth/password-reset/request", json={"email": email})
+    assert first.status_code == 202
+    assert first.json()["reset_token"]
+
+    second = client.post("/auth/password-reset/request", json={"email": email})
+    assert second.status_code == 202
+    assert second.json()["message"] == first.json()["message"]
+    assert second.json()["reset_token"] is None
+
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT count(*)
+                FROM password_reset_tokens t
+                JOIN users u ON u.id=t.user_id
+                WHERE lower(u.email)=%s
+                """,
+                (email,),
+            )
+            count = cursor.fetchone()[0]
+
+    assert count == 1
