@@ -86,3 +86,18 @@ Stop with `docker compose -f infra/docker-compose.yml down`. Add `-v` only when 
 The same root `.env` is injected into the Go gateway, FastAPI control plane, Celery worker/beat, migration runner, and local bootstrap. PostgreSQL reads `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`; Redis reads `REDIS_PASSWORD`; application services use `DATABASE_URL` and `REDIS_URL`. Keep these values consistent when changing local credentials.
 
 Long-running services use Docker's `unless-stopped` restart policy. Database migrations are tracked in `schema_migrations`, so restarting the stack does not reapply completed schema files.
+
+
+## Production stack
+
+Use the dedicated production stack instead of the development Compose file:
+
+```bash
+cp .env.production.example .env.production
+# Replace every CHANGE_ME value.
+docker compose -f infra/docker-compose.prod.yml up -d --build
+```
+
+The production stack uses compiled/prebuilt application images, non-root runtime users, read-only application filesystems, an internal PostgreSQL/Redis network, hardened Nginx headers, fail-fast production configuration checks, and optional Cloudflare Tunnel ingress.
+
+See `docs/production-release.md` for deployment, backup/restore, Cloudflare, and release-validation procedures.
