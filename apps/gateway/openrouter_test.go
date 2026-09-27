@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,7 +32,7 @@ func TestSyncFreeModelsFiltersPaidAndNonTextModels(t *testing.T){
 func TestChatMapsAutoFreeAndReturnsJSON(t *testing.T){
 	server:=httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
 		if r.Header.Get("Authorization")!="Bearer secret"{t.Fatal("missing provider authorization")}
-		body:=make([]byte,r.ContentLength);_,_=r.Body.Read(body)
+		body,err:=io.ReadAll(r.Body); if err!=nil { t.Fatal(err) }
 		if !strings.Contains(string(body),`"model":"openrouter/free"`){t.Fatalf("unexpected body %s",body)}
 		w.Header().Set("Content-Type","application/json")
 		_,_=w.Write([]byte(`{"id":"upstream-id","object":"chat.completion","choices":[]}`))
