@@ -120,16 +120,20 @@ export function ApiKeyPolicyForm({
       }
     }
 
-    await onSave({
-      name:trimmedName,
-      allow_all_free_models:allowAll,
-      default_model_id:defaultModel||null,
-      model_ids:allowAll?[]:selectedModels,
-      requests_per_minute:parseOptionalPositiveInteger(rpm),
-      requests_per_day:parseOptionalPositiveInteger(daily),
-      max_concurrent:parseOptionalPositiveInteger(concurrent),
-      expires_at:expiry,
-    });
+    try{
+      await onSave({
+        name:trimmedName,
+        allow_all_free_models:allowAll,
+        default_model_id:defaultModel||null,
+        model_ids:allowAll?[]:selectedModels,
+        requests_per_minute:parseOptionalPositiveInteger(rpm),
+        requests_per_day:parseOptionalPositiveInteger(daily),
+        max_concurrent:parseOptionalPositiveInteger(concurrent),
+        expires_at:expiry,
+      });
+    }catch(err){
+      setValidationError(err instanceof Error?err.message:String(err));
+    }
   }
 
   return <form className="dialog-form key-policy-form" onSubmit={submit}>
