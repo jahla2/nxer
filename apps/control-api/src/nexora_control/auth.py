@@ -554,7 +554,7 @@ def request_password_reset(
     with get_connection() as connection:
         with connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
-                "SELECT id FROM users WHERE lower(email)=%s AND status='active' LIMIT 1",
+                "SELECT id, email FROM users WHERE lower(email)=%s AND status='active' LIMIT 1",
                 (email,),
             )
             user = cursor.fetchone()
@@ -577,9 +577,17 @@ def request_password_reset(
                 )
         connection.commit()
 
+    if raw_token and user is not None and settings.smtp_configured:
+        _send_password_reset_best_effort(settings, user["email"], raw_token)
+
+    expose_dev_token = (
+        raw_token
+        and settings.environment.lower() in {"development", "test", "local"}
+        and settings.dev_expose_password_reset_token
+    )
     return PasswordResetRequested(
         message="If the account exists, password reset instructions are available.",
-        reset_token=raw_token if raw_token and settings.environment.lower() in {"development", "test", "local"} and settings.dev_expose_password_reset_token else None,
+        reset_token=raw_token if expose_dev_token else None,
     )
 
 
