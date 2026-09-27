@@ -165,7 +165,7 @@ export function AuthScreen({
         <h1 id="reset-password-title">Set a new password</h1>
         <p className="subtitle">Choose a new password for your Nexora account. Existing sessions will be revoked.</p>
         <form onSubmit={confirmReset}>
-          {!resetTokenProp&&<label>Reset token<input value={resetToken} onChange={event=>setResetToken(event.target.value)} autoComplete="off" required data-autofocus/></label>}
+          {!resetTokenProp&&<label>Reset token<input value={resetToken} onChange={event=>setResetToken(event.target.value)} autoComplete="off" required data-autofocus="true"/></label>}
           <label>New password<input type="password" value={newPassword} onChange={event=>setNewPassword(event.target.value)} minLength={12} autoComplete="new-password" required data-autofocus={Boolean(resetTokenProp)||undefined}/></label>
           <label>Confirm password<input type="password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
           <p className="form-hint">Use at least 12 characters. A successful reset signs out all active sessions.</p>
@@ -185,7 +185,7 @@ export function AuthScreen({
         <h1 id="forgot-password-title">Reset your password</h1>
         <p className="subtitle">Enter your account email. If it exists, Nexora will send a time-limited reset link.</p>
         <form onSubmit={requestReset}>
-          <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus/></label>
+          <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus="true"/></label>
           {notice&&<p className="success-message" role="status">{notice}</p>}
           {error&&<p className="error" role="alert">{error}</p>}
           <button disabled={busy} type="submit">{busy?"Sending…":"Send reset link"}</button>
@@ -201,7 +201,7 @@ export function AuthScreen({
       <h1 id="auth-title">{mode==="login"?"Sign in":"Create account"}</h1>
       <p className="subtitle">{mode==="login"?"Access your Nexora developer console.":"Create your developer account and first project."}</p>
       <form onSubmit={submitAuth}>
-        {mode==="register"&&<label>Name<input value={displayName} onChange={event=>setDisplayName(event.target.value)} minLength={2} autoComplete="name" required data-autofocus/></label>}
+        {mode==="register"&&<label>Name<input value={displayName} onChange={event=>setDisplayName(event.target.value)} minLength={2} autoComplete="name" required data-autofocus="true"/></label>}
         <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus={mode==="login"||undefined}/></label>
         <label>Password<input type="password" value={password} onChange={event=>setPassword(event.target.value)} minLength={mode==="register"?12:1} autoComplete={mode==="register"?"new-password":"current-password"} required/></label>
         {mode==="register"&&<p className="form-hint">Use at least 12 characters. Nexora will create a verification link for your email address.</p>}
