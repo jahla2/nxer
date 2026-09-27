@@ -114,6 +114,57 @@ export type HealthResponse={
   service?:string;
 };
 
+export type CatalogStatus={
+  provider_key:string;
+  status:string;
+  last_attempt_at:string|null;
+  last_success_at:string|null;
+  model_count:number;
+  active_model_count:number;
+  stale:boolean;
+  stale_after_minutes:number;
+  cache_available:boolean;
+  cache_ttl_seconds:number|null;
+};
+
+export type BackgroundJobStatus={
+  job_name:string;
+  status:string;
+  started_at:string|null;
+  completed_at:string|null;
+  duration_ms:number|null;
+  error_message:string|null;
+};
+
+export type OperationsStatus={
+  status:string;
+  catalog:CatalogStatus;
+  jobs:BackgroundJobStatus[];
+};
+
+export type AdminJobRun={
+  id:string;
+  job_name:string;
+  task_id:string|null;
+  status:string;
+  started_at:string;
+  completed_at:string|null;
+  duration_ms:number|null;
+  result:Record<string,unknown>;
+  error_message:string|null;
+  worker_name:string|null;
+};
+
+export type AuditLogEntry={
+  id:string;
+  actor_user_id:string|null;
+  action:string;
+  resource_type:string;
+  resource_id:string|null;
+  metadata:Record<string,unknown>;
+  created_at:string;
+};
+
 export type PasswordResetRequested={
   message:string;
   reset_token?:string|null;
@@ -199,6 +250,9 @@ export const api={
 
   controlHealth:()=>rawJson<HealthResponse>(`${CONTROL}/health`),
   gatewayHealth:()=>rawJson<HealthResponse>("/health"),
+  operationsStatus:()=>rawJson<OperationsStatus>(`${CONTROL}/operations/status`),
+  adminJobs:(limit=100)=>rawJson<AdminJobRun[]>(`${CONTROL}/admin/jobs?limit=${encodeURIComponent(String(limit))}`),
+  adminAudit:(limit=100)=>rawJson<AuditLogEntry[]>(`${CONTROL}/admin/audit?limit=${encodeURIComponent(String(limit))}`),
 
   projects:()=>rawJson<Project[]>(`${CONTROL}/projects`),
   createProject:(name:string)=>rawJson<Project>(`${CONTROL}/projects`,{
