@@ -1,6 +1,7 @@
 import os
 
 from celery import Celery
+from celery.signals import worker_ready
 
 from catalog_sync import sync_model_catalog
 from operations import JobRun
@@ -117,3 +118,11 @@ def cleanup_housekeeping_task(self) -> dict:
 @app.task(name="nexora.cleanup_idempotency")
 def cleanup_idempotency_compat() -> dict:
     return cleanup_housekeeping(settings)
+
+
+@worker_ready.connect
+def schedule_initial_catalog_sync(sender=None, **_kwargs) -> None:
+    # Do not wait for the first periodic interval after a worker restart.
+    # Advisory locking in the sync task makes duplicate startup signals safe.
+    if sender is not None:
+        sender.app.send_task("nexora.sync_model_catalog")
