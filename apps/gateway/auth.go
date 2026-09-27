@@ -14,7 +14,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-const apiKeyPrefixLength = 16
+const apiKeyPrefix = "nxa_live_"
 
 type apiKeyContextKey struct{}
 
@@ -53,10 +53,14 @@ func NewAPIKeyAuthenticator(databaseURL, pepper string) (*APIKeyAuthenticator, e
 func (a *APIKeyAuthenticator) Close() error { return a.db.Close() }
 
 func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (*APIKeyPrincipal, error) {
-	if !strings.HasPrefix(rawKey, "nxa_") || len(rawKey) < apiKeyPrefixLength {
+	if !strings.HasPrefix(rawKey, apiKeyPrefix) {
 		return nil, sql.ErrNoRows
 	}
-	prefix := rawKey[:apiKeyPrefixLength]
+	dot := strings.IndexByte(rawKey, '.')
+	if dot <= len(apiKeyPrefix) || dot == len(rawKey)-1 {
+		return nil, sql.ErrNoRows
+	}
+	prefix := rawKey[:dot]
 	var principal APIKeyPrincipal
 	var storedHash []byte
 	err := a.db.QueryRowContext(ctx, `

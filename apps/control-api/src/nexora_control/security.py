@@ -2,17 +2,19 @@ import hashlib
 import hmac
 import secrets
 
-API_KEY_PREFIX = "nxa_"
+API_KEY_PREFIX = "nxa_live_"
 
 
 def generate_api_key() -> str:
-    return API_KEY_PREFIX + secrets.token_urlsafe(32)
+    public_prefix = secrets.token_hex(6)
+    secret = secrets.token_urlsafe(48)
+    return f"{API_KEY_PREFIX}{public_prefix}.{secret}"
 
 
 def key_prefix(raw_key: str) -> str:
     if not raw_key.startswith(API_KEY_PREFIX):
         raise ValueError("invalid Nexora API key prefix")
-    return raw_key[:16]
+    return raw_key.split(".", 1)[0]
 
 
 def hash_api_key(raw_key: str, pepper: str) -> bytes:
