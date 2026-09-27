@@ -1,16 +1,19 @@
-import React from "react";
-import type {ApiKey,Project} from "../api";
+import React,{useMemo} from "react";
+import type {ApiKey,ConsoleModel,Project} from "../api";
 
 function formatExpiry(value:string|null){
   if(!value)return "No expiry";
   const date=new Date(value);
-  return Number.isNaN(date.getTime())?"Unknown expiry":date.toLocaleDateString();
+  if(Number.isNaN(date.getTime()))return "Unknown expiry";
+  if(date.getTime()<=Date.now())return "Expired";
+  return date.toLocaleString();
 }
 
 export function ApiKeysPage({
   projects,
   projectId,
   keys,
+  models,
   onProjectChange,
   onCreate,
   onEdit,
@@ -20,6 +23,7 @@ export function ApiKeysPage({
   projects:Project[];
   projectId:string;
   keys:ApiKey[];
+  models:ConsoleModel[];
   onProjectChange:(projectId:string)=>void;
   onCreate:()=>void;
   onEdit:(apiKey:ApiKey)=>void;
@@ -28,6 +32,7 @@ export function ApiKeysPage({
 }){
   const activeProjects=projects.filter(project=>project.status==="active");
   const activeKeys=keys.filter(item=>item.status==="active").length;
+  const modelById=useMemo(()=>new Map(models.map(model=>[model.id,model])),[models]);
 
   return <div className="page-stack">
     <div className="section-toolbar">
@@ -48,31 +53,46 @@ export function ApiKeysPage({
       <h2>Select a project</h2>
       <p>API keys are always scoped to a project.</p>
     </div>:keys.length?<div className="page-stack compact-gap">
-      <div className="list-summary"><span>{activeKeys} active</span><span>{keys.length-activeKeys} inactive</span></div>
+      <div className="list-summary"><span>{activeKeys} active</span><span>{keys.length-activeKeys} inactive</span><span>{models.length} free models in catalog</span></div>
       <div className="table-list">
-        {keys.map(item=><article className="table-row key-row" key={item.id}>
-          <div className="key-meta">
-            <div><strong>{item.name}</strong><span className={"status "+item.status}>{item.status}</span></div>
-            <code>{item.key_prefix}…</code>
-            <div className="metadata-grid">
-              <span><small>RPM</small><strong>{item.requests_per_minute??"Default"}</strong></span>
-              <span><small>Daily</small><strong>{item.requests_per_day??"Default"}</strong></span>
-              <span><small>Concurrent</small><strong>{item.max_concurrent??"Default"}</strong></span>
-              <span><small>Expiry</small><strong>{formatExpiry(item.expires_at)}</strong></span>
+        {keys.map(item=>{
+          const defaultModel=item.default_model_id?modelById.get(item.default_model_id):null;
+          const scopedModels=item.model_ids.map(id=>modelById.get(id)).filter((model):model is ConsoleModel=>Boolean(model));
+          return <article className="table-row key-row" key={item.id}>
+            <div className="key-meta">
+              <div><strong>{item.name}</strong><span className={"status "+item.status}>{item.status}</span></div>
+              <code>{item.key_prefix}…</code>
+
+              <div className="key-policy-badges">
+                <span className="policy-badge">{item.allow_all_free_models?"All free models":`${item.model_ids.length} scoped model${item.model_ids.length===1?"":"s"}`}</span>
+                {defaultModel&&<span className="policy-badge muted">Default · {defaultModel.display_name}</span>}
+              </div>
+
+              {!item.allow_all_free_models&&scopedModels.length>0&&<div className="key-scope-list">
+                {scopedModels.slice(0,4).map(model=><span key={model.id} title={model.public_id}>{model.display_name}</span>)}
+                {scopedModels.length>4&&<span>+{scopedModels.length-4} more</span>}
+              </div>}
+
+              <div className="metadata-grid">
+                <span><small>RPM</small><strong>{item.requests_per_minute??"Default"}</strong></span>
+                <span><small>Daily</small><strong>{item.requests_per_day??"Default"}</strong></span>
+                <span><small>Concurrent</small><strong>{item.max_concurrent??"Default"}</strong></span>
+                <span><small>Expiry</small><strong>{formatExpiry(item.expires_at)}</strong></span>
+              </div>
+              <small>Last used {item.last_used_at?new Date(item.last_used_at).toLocaleString():"Never"} · Updated {new Date(item.updated_at).toLocaleString()}</small>
             </div>
-            <small>Last used {item.last_used_at?new Date(item.last_used_at).toLocaleString():"Never"}</small>
-          </div>
-          <div className="row-actions">
-            <button disabled={item.status!=="active"} onClick={()=>onEdit(item)}>Edit</button>
-            <button disabled={item.status!=="active"} onClick={()=>onRotate(item)}>Rotate</button>
-            <button className="danger-link" disabled={item.status!=="active"} onClick={()=>onRevoke(item)}>Revoke</button>
-          </div>
-        </article>)}
+            <div className="row-actions">
+              <button disabled={item.status!=="active"} onClick={()=>onEdit(item)}>Policy</button>
+              <button disabled={item.status!=="active"} onClick={()=>onRotate(item)}>Rotate</button>
+              <button className="danger-link" disabled={item.status!=="active"} onClick={()=>onRevoke(item)}>Revoke</button>
+            </div>
+          </article>;
+        })}
       </div>
     </div>:<div className="empty-state-card">
       <div className="empty-state-icon" aria-hidden="true">K</div>
       <h2>No API keys yet</h2>
-      <p>Create a key for this project. The raw secret is displayed only once.</p>
+      <p>Create a key with explicit model access, rate limits and optional expiration. The raw secret is displayed only once.</p>
       <button className="primary" onClick={onCreate}>Create API key</button>
     </div>}
   </div>;
