@@ -110,6 +110,15 @@ def test_housekeeping_removes_expired_metadata_in_bounded_batches() -> None:
     with psycopg.connect(settings.database_url) as conn:
         conn.execute(
             """
+            UPDATE usage_aggregation_state
+            SET last_created_at=now(),
+                last_event_id='ffffffff-ffff-ffff-ffff-ffffffffffff',
+                updated_at=now()
+            WHERE name='usage_daily'
+            """
+        )
+        conn.execute(
+            """
             INSERT INTO usage_events(request_id,api_key_id,status,created_at)
             VALUES (%s,%s,200,%s)
             """,
