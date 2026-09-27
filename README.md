@@ -9,7 +9,7 @@ Nexora AI Gateway is a reusable, white-label, OpenAI-compatible API gateway for 
 - Celery + Redis background work
 - PostgreSQL authoritative persistence
 - Redis for limits, quotas, idempotency, locks, and hot metadata
-- OpenRouter adapter for V1 free-model inference
+- Private provider adapter for V1 free-model inference; upstream routing is not exposed to clients
 - Docker Compose + Nginx + Cloudflare Tunnel deployment
 
 ## Quick start
@@ -42,6 +42,10 @@ const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "nxa_li
 const result = await client.chat.completions.create({ model: "auto-free", messages: [{ role: "user", content: "Hello" }] });
 ```
 
+## Provider-neutral model IDs
+
+`GET /v1/models` returns only Nexora-owned public identifiers. The special `auto-free` route remains stable, while concrete free models use opaque `nexora/<alias>` IDs. The provider key, upstream route, upstream completion IDs, and provider-specific response metadata remain internal to the gateway.
+
 ## Production validation
 Run migrations in order before starting services. Validate `/ready`, verify the free-model catalog, run the security/load suites, and perform a database backup/restore drill before exposing the Cloudflare hostname.
 
@@ -64,7 +68,7 @@ Start the full stack from the repository root:
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-The tracked migration runner applies each SQL migration exactly once and safely skips already-applied versions. The local bootstrap then runs idempotently before the application services start. Open `http://localhost:8080`. In the console enter the same `CONTROL_ADMIN_TOKEN` from `.env`. A Local Project is bootstrapped. Create an API key in the API Keys module; the UI saves the one-time raw key locally for Models and Playground.
+The tracked migration runner applies each SQL migration exactly once and safely skips already-applied versions. The local bootstrap then runs idempotently before the application services start. Open `http://localhost:8080`, register or sign in, create/select a project, then create an API key. Raw API key secrets are shown once; store them securely. The Models and Playground surfaces use Nexora public model IDs and never require an upstream provider model ID.
 
 Useful local endpoints:
 
