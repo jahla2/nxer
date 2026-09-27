@@ -6,7 +6,7 @@ from nexora_control.main import app
 
 
 def unique_email(prefix: str) -> str:
-    return f"{prefix}-{uuid4().hex}@example.test"
+    return f"{prefix}-{uuid4().hex}@example.com"
 
 
 def register(client: TestClient, email: str, password: str = "correct-horse-battery") -> dict:
