@@ -9,7 +9,26 @@ from nexora_control.audit import write_audit
 from nexora_control.auth import UserPrincipal, get_current_user, require_csrf
 from nexora_control.config import Settings, get_settings
 from nexora_control.database import get_connection
+from nexora_control.gateway_cache import (
+    GatewayAuthCacheError,
+    invalidate_api_key_prefixes,
+    invalidate_api_key_prefixes_best_effort,
+)
 from nexora_control.security import generate_api_key, hash_api_key, key_prefix
+
+
+def _invalidate_gateway_auth_cache(prefixes: list[str]) -> None:
+    try:
+        invalidate_api_key_prefixes(prefixes)
+    except GatewayAuthCacheError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gateway authorization cache is unavailable. No key changes were applied.",
+        ) from exc
+
+
+def _invalidate_gateway_auth_cache_after_commit(prefixes: list[str]) -> None:
+    invalidate_api_key_prefixes_best_effort(prefixes)
 
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
@@ -288,6 +307,8 @@ def update_api_key(
             if existing["status"] != "active":
                 raise HTTPException(status_code=409, detail="Only active API keys can be updated")
 
+            _invalidate_gateway_auth_cache([existing["key_prefix"]])
+
             allow_all = (
                 payload.allow_all_free_models
                 if "allow_all_free_models" in fields
@@ -352,6 +373,7 @@ def update_api_key(
                 metadata={"fields": sorted(fields)},
             )
         connection.commit()
+    _invalidate_gateway_auth_cache_after_commit([existing["key_prefix"]])
     return APIKeyView(**row)
 
 
@@ -386,6 +408,8 @@ def rotate_api_key(
                 raise HTTPException(status_code=404, detail="Active API key not found")
             if existing["status"] != "active":
                 raise HTTPException(status_code=409, detail="Only active API keys can be rotated")
+
+            _invalidate_gateway_auth_cache([existing["key_prefix"]])
 
             cursor.execute(
                 """
@@ -444,6 +468,7 @@ def rotate_api_key(
             )
         connection.commit()
 
+    _invalidate_gateway_auth_cache_after_commit([existing["key_prefix"]])
     return APIKeyCreated(api_key=raw_key, **row)
 
 
@@ -459,26 +484,30 @@ def revoke_api_key(
     with get_connection() as connection:
         with connection.cursor(row_factory=dict_row) as cursor:
             cursor.execute(
-                """
-                UPDATE api_keys k
-                SET status='revoked',
-                    revoked_at=COALESCE(k.revoked_at, now()),
-                    updated_at=now()
-                WHERE k.id=%s
-                  AND EXISTS (
-                      SELECT 1
-                      FROM projects p
-                      WHERE p.id=k.project_id
-                        AND p.user_id=%s
-                  )
-                RETURNING k.id
+                KEY_SELECT
+                + """
+                  JOIN projects p ON p.id=k.project_id
+                  WHERE k.id=%s AND p.user_id=%s
+                  FOR UPDATE OF k
                 """,
                 (api_key_id, current_user.id),
             )
-            updated = cursor.fetchone()
-            if updated is None:
+            existing = cursor.fetchone()
+            if existing is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
 
+            _invalidate_gateway_auth_cache([existing["key_prefix"]])
+
+            cursor.execute(
+                """
+                UPDATE api_keys
+                SET status='revoked',
+                    revoked_at=COALESCE(revoked_at, now()),
+                    updated_at=now()
+                WHERE id=%s
+                """,
+                (api_key_id,),
+            )
             row = _fetch_key(cursor, api_key_id)
             write_audit(
                 connection,
@@ -489,4 +518,6 @@ def revoke_api_key(
                 metadata={"key_prefix": row["key_prefix"]},
             )
         connection.commit()
+
+    _invalidate_gateway_auth_cache_after_commit([existing["key_prefix"]])
     return APIKeyView(**row)

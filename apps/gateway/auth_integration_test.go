@@ -20,6 +20,10 @@ func TestAuthenticateEnforcesActiveProjectAndModelScope(t *testing.T) {
 	if strings.TrimSpace(pepper) == "" {
 		t.Fatal("API_KEY_HASH_PEPPER is required for integration test")
 	}
+	redisURL := os.Getenv("REDIS_URL")
+	if strings.TrimSpace(redisURL) == "" {
+		t.Skip("REDIS_URL not configured; skipping Redis-backed authorization integration test")
+	}
 
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
@@ -97,7 +101,7 @@ func TestAuthenticateEnforcesActiveProjectAndModelScope(t *testing.T) {
 		t.Fatalf("insert model scope: %v", err)
 	}
 
-	authenticator, err := NewAPIKeyAuthenticator(databaseURL, pepper)
+	authenticator, err := NewAPIKeyAuthenticator(databaseURL, redisURL, pepper)
 	if err != nil {
 		t.Fatalf("create authenticator: %v", err)
 	}
@@ -117,8 +121,20 @@ func TestAuthenticateEnforcesActiveProjectAndModelScope(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "UPDATE projects SET status='archived' WHERE id=$1", projectID); err != nil {
 		t.Fatalf("archive project: %v", err)
 	}
+
+	cachedPrincipal, err := authenticator.Authenticate(ctx, rawKey)
+	if err != nil {
+		t.Fatalf("expected cached authorization before invalidation, got %v", err)
+	}
+	if cachedPrincipal.ID != keyID {
+		t.Fatalf("unexpected cached principal %q", cachedPrincipal.ID)
+	}
+
+	if err := authenticator.InvalidatePrefix(ctx, prefix); err != nil {
+		t.Fatalf("invalidate cached API key: %v", err)
+	}
 	_, err = authenticator.Authenticate(ctx, rawKey)
 	if !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("archived project must invalidate API key authentication; got %v", err)
+		t.Fatalf("archived project must invalidate API key authentication after cache purge; got %v", err)
 	}
 }

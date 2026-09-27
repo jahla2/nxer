@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 
 from nexora_control.database import get_connection
+from nexora_control.gateway_cache import api_key_cache_key, get_gateway_cache_client
 from nexora_control.main import app
 
 
@@ -60,6 +61,9 @@ def test_project_and_api_key_full_lifecycle_and_audit() -> None:
     original = create_key(client, pid)
     raw_original = original["api_key"]
     original_id = original["id"]
+    cache = get_gateway_cache_client()
+    original_cache_key = api_key_cache_key(original["key_prefix"])
+    cache.set(original_cache_key, b"stale-auth-cache", ex=300)
 
     renamed_key = client.patch(
         f"/api-keys/{original_id}",
@@ -76,6 +80,7 @@ def test_project_and_api_key_full_lifecycle_and_audit() -> None:
     assert renamed_key.json()["requests_per_minute"] == 7
     assert renamed_key.json()["requests_per_day"] == 25
     assert renamed_key.json()["max_concurrent"] == 3
+    assert cache.exists(original_cache_key) == 0
 
     model_id = uuid4()
     with get_connection() as connection:
@@ -107,6 +112,7 @@ def test_project_and_api_key_full_lifecycle_and_audit() -> None:
     assert scoped.json()["default_model_id"] == str(model_id)
     assert scoped.json()["model_ids"] == [str(model_id)]
 
+    cache.set(original_cache_key, b"stale-auth-cache", ex=300)
     rotated = client.post(
         f"/api-keys/{original_id}/rotate",
         headers={"X-CSRF-Token": csrf(client)},
@@ -117,6 +123,7 @@ def test_project_and_api_key_full_lifecycle_and_audit() -> None:
     assert rotated_payload["rotated_from_id"] == original_id
     assert rotated_payload["name"] == "Production SDK"
     assert rotated_payload["model_ids"] == [str(model_id)]
+    assert cache.exists(original_cache_key) == 0
 
     with get_connection() as connection:
         with connection.cursor() as cursor:
@@ -148,12 +155,15 @@ def test_project_and_api_key_full_lifecycle_and_audit() -> None:
         "api_key.rotated",
     }.issubset(actions)
 
+    rotated_cache_key = api_key_cache_key(rotated_payload["key_prefix"])
+    cache.set(rotated_cache_key, b"stale-auth-cache", ex=300)
     archived = client.post(
         f"/projects/{pid}/archive",
         headers={"X-CSRF-Token": csrf(client)},
     )
     assert archived.status_code == 200
     assert archived.json()["status"] == "archived"
+    assert cache.exists(rotated_cache_key) == 0
 
     listed = client.get(f"/api-keys?project_id={pid}")
     assert listed.status_code == 200
@@ -197,3 +207,23 @@ def test_project_and_key_mutations_are_owner_scoped() -> None:
         f"/api-keys/{key['id']}/rotate",
         headers={"X-CSRF-Token": csrf(stranger)},
     ).status_code == 404
+
+
+def test_revoke_invalidates_gateway_authorization_cache() -> None:
+    client = TestClient(app)
+    register(client)
+    pid = project_id(client)
+    created = create_key(client, pid, name="Revocation cache test")
+
+    cache = get_gateway_cache_client()
+    cache_key = api_key_cache_key(created["key_prefix"])
+    cache.set(cache_key, b"stale-auth-cache", ex=300)
+    assert cache.exists(cache_key) == 1
+
+    revoked = client.post(
+        f"/api-keys/{created['id']}/revoke",
+        headers={"X-CSRF-Token": csrf(client)},
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json()["status"] == "revoked"
+    assert cache.exists(cache_key) == 0

@@ -20,9 +20,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nexora
+      REDIS_URL: redis://localhost:6379/0
       API_KEY_HASH_PEPPER: test-api-key-pepper-that-is-longer-than-thirty-two-characters
+      API_KEY_AUTH_CACHE_TTL_SECONDS: "300"
     defaults: {run: {working-directory: apps/gateway}}
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +59,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nexora
+      REDIS_URL: redis://localhost:6379/0
       SESSION_SECRET: test-session-secret-that-is-longer-than-thirty-two-characters
       API_KEY_HASH_PEPPER: test-api-key-pepper-that-is-longer-than-thirty-two-characters
       ENVIRONMENT: test
