@@ -171,7 +171,8 @@ jobs:
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='email_verification_tokens'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='background_job_runs'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='catalog_sync_state'")" = "1"
-          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='usage_aggregation_state'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='usage_events' AND column_name='aggregated_at'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_events' AND indexname='idx_usage_events_unaggregated'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM models WHERE public_id='auto-free' AND active=true AND is_free=true")" = "1"
 
   compose-config:
