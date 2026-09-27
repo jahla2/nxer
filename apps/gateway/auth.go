@@ -51,6 +51,7 @@ func NewAPIKeyAuthenticator(databaseURL, pepper string) (*APIKeyAuthenticator, e
 }
 
 func (a *APIKeyAuthenticator) Close() error { return a.db.Close() }
+func (a *APIKeyAuthenticator) Ping(ctx context.Context) error { return a.db.PingContext(ctx) }
 
 func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (*APIKeyPrincipal, error) {
 	if !strings.HasPrefix(rawKey, apiKeyPrefix) {
@@ -84,7 +85,6 @@ func (a *APIKeyAuthenticator) Authenticate(ctx context.Context, rawKey string) (
 	if !hmac.Equal(actual, storedHash) {
 		return nil, sql.ErrNoRows
 	}
-	_, _ = a.db.ExecContext(ctx, "UPDATE api_keys SET last_used_at = now() WHERE id = $1", principal.ID)
 	return &principal, nil
 }
 

@@ -13,6 +13,7 @@ var modelCatalog = NewModelCatalog()
 var apiKeyAuthenticator *APIKeyAuthenticator
 var admissionController *AdmissionController
 var openRouterProvider *OpenRouterProvider
+var idempotencyGuard *IdempotencyGuard
 
 func main() {
 	var err error
@@ -22,6 +23,7 @@ func main() {
 	admissionController, err = NewAdmissionController(getenv("REDIS_URL", ""))
 	if err != nil { log.Fatalf("gateway admission configuration invalid: %v", err) }
 	defer admissionController.Close()
+	idempotencyGuard = NewIdempotencyGuard(admissionController.RedisClient())
 	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
 	if err != nil { log.Fatalf("gateway provider configuration invalid: %v",err) }
 	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil { log.Fatalf("initial free-model catalog sync failed: %v",err) }
@@ -29,7 +31,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/ready", healthHandler)
+	mux.HandleFunc("/ready", readyHandler)
 	mux.Handle("/v1/models", authMiddleware(apiKeyAuthenticator, http.HandlerFunc(modelsHandler)))
 	mux.Handle("/v1/chat/completions", authMiddleware(apiKeyAuthenticator, http.HandlerFunc(chatHandler)))
 
@@ -48,6 +50,14 @@ func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status":"ok","service":"gateway","time":time.Now().UTC().Format(time.RFC3339)})
 }
 
+func readyHandler(w http.ResponseWriter, r *http.Request) {
+	ctx,cancel:=context.WithTimeout(r.Context(),2*time.Second); defer cancel()
+	if apiKeyAuthenticator==nil || admissionController==nil || apiKeyAuthenticator.Ping(ctx)!=nil || admissionController.RedisClient().Ping(ctx).Err()!=nil {
+		writeJSON(w,http.StatusServiceUnavailable,map[string]any{"status":"not_ready","service":"gateway"}); return
+	}
+	writeJSON(w,http.StatusOK,map[string]any{"status":"ok","service":"gateway"})
+}
+
 func modelsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet { writeAPIError(w,newAPIError(http.StatusMethodNotAllowed,"method_not_allowed","NEXORA_METHOD_NOT_ALLOWED","Method not allowed.")); return }
 	writeJSON(w,http.StatusOK,map[string]any{"object":"list","data":modelCatalog.ListActiveFree()})
@@ -60,6 +70,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := modelCatalog.Get(req.Model); !ok { writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
 	principal, ok := r.Context().Value(apiKeyContextKey{}).(*APIKeyPrincipal)
 	if !ok { writeAPIError(w,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
+	if idemErr:=idempotencyGuard.Begin(r,principal,req); idemErr!=nil { writeAPIError(w,idemErr); return }
 	lease, admissionErr := admissionController.Admit(r.Context(), principal)
 	if admissionErr != nil { writeAPIError(w, admissionErr); return }
 	defer lease.Release(context.WithoutCancel(r.Context()))
