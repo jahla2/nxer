@@ -41,6 +41,47 @@ CREATE INDEX IF NOT EXISTS idx_usage_events_unaggregated
     WHERE aggregated_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_usage_events_created_at
     ON usage_events(created_at);
+
+
+-- Establish an exact baseline for the new incremental aggregator. Previous
+-- alpha builds rebuilt usage_daily from raw usage_events, so recompute the
+-- dimensions represented by retained raw events once and mark them processed.
+WITH retained_dimensions AS (
+    SELECT DISTINCT created_at::date AS usage_date, api_key_id, model_id
+    FROM usage_events
+)
+DELETE FROM usage_daily daily
+USING retained_dimensions dimensions
+WHERE daily.usage_date=dimensions.usage_date
+  AND daily.api_key_id=dimensions.api_key_id
+  AND daily.model_id IS NOT DISTINCT FROM dimensions.model_id;
+
+INSERT INTO usage_daily (
+    usage_date,
+    api_key_id,
+    model_id,
+    requests,
+    prompt_tokens,
+    completion_tokens
+)
+SELECT
+    created_at::date,
+    api_key_id,
+    model_id,
+    count(*),
+    coalesce(sum(prompt_tokens), 0),
+    coalesce(sum(completion_tokens), 0)
+FROM usage_events
+GROUP BY created_at::date, api_key_id, model_id
+ON CONFLICT (usage_date, api_key_id, model_id) DO UPDATE SET
+    requests=EXCLUDED.requests,
+    prompt_tokens=EXCLUDED.prompt_tokens,
+    completion_tokens=EXCLUDED.completion_tokens,
+    updated_at=now();
+
+UPDATE usage_events
+SET aggregated_at=COALESCE(aggregated_at, now())
+WHERE aggregated_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at
     ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires
