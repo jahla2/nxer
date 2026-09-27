@@ -6,18 +6,35 @@ export type User={
   email_verified:boolean;
 };
 
-export type Project={id:string;name:string;status:string;created_at:string};
+export type Project={
+  id:string;
+  name:string;
+  status:string;
+  created_at:string;
+  updated_at:string;
+};
+
 export type ApiKey={
   id:string;
   project_id:string;
   name:string;
   key_prefix:string;
   status:string;
+  default_model_id:string|null;
+  model_ids:string[];
+  allow_all_free_models:boolean;
+  requests_per_minute:number|null;
+  requests_per_day:number|null;
+  max_concurrent:number|null;
   created_at:string;
-  last_used_at?:string|null;
-  expires_at?:string|null;
-  revoked_at?:string|null;
+  updated_at:string;
+  last_used_at:string|null;
+  expires_at:string|null;
+  revoked_at:string|null;
+  rotated_from_id:string|null;
 };
+
+export type ApiKeyCreated=ApiKey&{api_key:string};
 
 const CONTROL="/api";
 const GATEWAY="/v1";
@@ -67,10 +84,22 @@ export const api={
   createProject:(name:string)=>rawJson<Project>(`${CONTROL}/projects`,{
     method:"POST",headers:mutationHeaders(),body:JSON.stringify({name})
   }),
+  renameProject:(id:string,name:string)=>rawJson<Project>(`${CONTROL}/projects/${id}`,{
+    method:"PATCH",headers:mutationHeaders(),body:JSON.stringify({name})
+  }),
+  archiveProject:(id:string)=>rawJson<Project>(`${CONTROL}/projects/${id}/archive`,{
+    method:"POST",headers:mutationHeaders()
+  }),
 
   keys:(projectId:string)=>rawJson<ApiKey[]>(`${CONTROL}/api-keys?project_id=${encodeURIComponent(projectId)}`),
-  createKey:(projectId:string,name:string)=>rawJson<ApiKey&{api_key:string}>(`${CONTROL}/api-keys`,{
+  createKey:(projectId:string,name:string)=>rawJson<ApiKeyCreated>(`${CONTROL}/api-keys`,{
     method:"POST",headers:mutationHeaders(),body:JSON.stringify({project_id:projectId,name,allow_all_free_models:true})
+  }),
+  updateKey:(id:string,payload:Partial<Pick<ApiKey,"name"|"allow_all_free_models"|"default_model_id"|"model_ids"|"requests_per_minute"|"requests_per_day"|"max_concurrent"|"expires_at">>)=>rawJson<ApiKey>(`${CONTROL}/api-keys/${id}`,{
+    method:"PATCH",headers:mutationHeaders(),body:JSON.stringify(payload)
+  }),
+  rotateKey:(id:string)=>rawJson<ApiKeyCreated>(`${CONTROL}/api-keys/${id}/rotate`,{
+    method:"POST",headers:mutationHeaders()
   }),
   revokeKey:(id:string)=>rawJson<ApiKey>(`${CONTROL}/api-keys/${id}/revoke`,{
     method:"POST",headers:mutationHeaders()
