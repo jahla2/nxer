@@ -1,0 +1,23 @@
+openapi: 3.1.0
+info: {title: Nexora AI Gateway, version: 0.1.0-alpha}
+paths:
+  /health:
+    get:
+      responses: {"200": {description: Liveness}}
+  /ready:
+    get:
+      responses: {"200": {description: Readiness}}
+  /v1/models:
+    get:
+      responses: {"200": {description: Active Nexora models}}
+  /v1/chat/completions:
+    post:
+      security: [{bearerAuth: []}]
+      responses:
+        "200": {description: OpenAI-compatible completion}
+        "401": {description: Invalid API key}
+        "429": {description: Rate limited}
+        "503": {description: No eligible route available}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
