@@ -1,0 +1,117 @@
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+
+from nexora_control.main import app
+
+
+def unique_email(prefix: str) -> str:
+    return f"{prefix}-{uuid4().hex}@example.test"
+
+
+def register(client: TestClient, email: str, password: str = "correct-horse-battery") -> dict:
+    response = client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "display_name": "Test Developer"},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def csrf(client: TestClient) -> str:
+    value = client.cookies.get("nexora_csrf")
+    assert value
+    return value
+
+
+def test_register_session_csrf_project_logout_and_login() -> None:
+    email = unique_email("session")
+    password = "correct-horse-battery"
+    client = TestClient(app)
+
+    user = register(client, email, password)
+    assert user["email"] == email
+
+    me = client.get("/auth/me")
+    assert me.status_code == 200
+    assert me.json()["display_name"] == "Test Developer"
+
+    projects = client.get("/projects")
+    assert projects.status_code == 200
+    assert any(project["name"] == "My Project" for project in projects.json())
+
+    rejected = client.post("/projects", json={"name": "No CSRF"})
+    assert rejected.status_code == 403
+
+    created = client.post(
+        "/projects",
+        json={"name": "Owned Project"},
+        headers={"X-CSRF-Token": csrf(client)},
+    )
+    assert created.status_code == 201
+
+    logged_out = client.post("/auth/logout", headers={"X-CSRF-Token": csrf(client)})
+    assert logged_out.status_code == 204
+    assert client.get("/auth/me").status_code == 401
+
+    logged_in = client.post("/auth/login", json={"email": email, "password": password})
+    assert logged_in.status_code == 200
+    assert client.get("/auth/me").status_code == 200
+
+
+def test_project_and_api_key_ownership_isolation() -> None:
+    owner = TestClient(app)
+    stranger = TestClient(app)
+    register(owner, unique_email("owner"))
+    register(stranger, unique_email("stranger"))
+
+    owner_projects = owner.get("/projects").json()
+    project_id = owner_projects[0]["id"]
+
+    hidden = stranger.get(f"/api-keys?project_id={project_id}")
+    assert hidden.status_code == 404
+
+    created = owner.post(
+        "/api-keys",
+        json={"project_id": project_id, "name": "Owner key", "allow_all_free_models": True},
+        headers={"X-CSRF-Token": csrf(owner)},
+    )
+    assert created.status_code == 201, created.text
+    key_payload = created.json()
+    assert key_payload["api_key"].startswith("nxa_live_")
+
+    denied_revoke = stranger.post(
+        f"/api-keys/{key_payload['id']}/revoke",
+        headers={"X-CSRF-Token": csrf(stranger)},
+    )
+    assert denied_revoke.status_code == 404
+
+    revoked = owner.post(
+        f"/api-keys/{key_payload['id']}/revoke",
+        headers={"X-CSRF-Token": csrf(owner)},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+
+
+def test_password_reset_revokes_existing_session_and_changes_password() -> None:
+    client = TestClient(app)
+    email = unique_email("reset")
+    old_password = "correct-horse-battery"
+    new_password = "new-correct-horse-battery"
+    register(client, email, old_password)
+
+    requested = client.post("/auth/password-reset/request", json={"email": email})
+    assert requested.status_code == 202
+    reset_token = requested.json()["reset_token"]
+    assert reset_token
+
+    confirmed = client.post(
+        "/auth/password-reset/confirm",
+        json={"token": reset_token, "new_password": new_password},
+    )
+    assert confirmed.status_code == 204
+
+    assert client.get("/auth/me").status_code == 401
+    assert client.post("/auth/login", json={"email": email, "password": old_password}).status_code == 401
+    assert client.post("/auth/login", json={"email": email, "password": new_password}).status_code == 200
