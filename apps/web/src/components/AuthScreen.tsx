@@ -131,8 +131,8 @@ export function AuthScreen({
     try{
       const verified=await api.confirmEmailVerification(verifyToken);
       clearActionQuery();
-      onAuthenticated(verified);
       if(sessionUser){
+        onAuthenticated(verified);
         onActionComplete();
         return;
       }
