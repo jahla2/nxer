@@ -567,27 +567,40 @@ func (p *OpenRouterProvider) streamResponse(
 		)
 	}
 
+	// Prepare streaming headers but do not commit HTTP 200 until the first valid
+	// SSE frame is ready. This preserves the ability to return a structured
+	// timeout/invalid-response error if the provider stalls before first token.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
 
 	metrics := &ProviderMetrics{Status: http.StatusOK}
 	reader := bufio.NewReaderSize(resp.Body, 32*1024)
 	firstDataSeen := false
 	sawDone := false
+	started := false
 	publicCompletionID := newCompletionID()
 
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			select {
-			case <-ctx.Done():
-				metrics.Status = 499
+			if ctxErr := ctx.Err(); ctxErr != nil {
 				metrics.Completed = false
 				metrics.LatencyMS = durationMillisPtr(time.Since(start))
+				if errors.Is(ctxErr, context.DeadlineExceeded) {
+					metrics.Status = http.StatusGatewayTimeout
+					if !started {
+						return metrics, newAPIError(
+							http.StatusGatewayTimeout,
+							"upstream_error",
+							"NEXORA_UPSTREAM_TIMEOUT",
+							"Upstream provider timed out.",
+						)
+					}
+					return metrics, nil
+				}
+				metrics.Status = 499
 				return metrics, nil
-			default:
 			}
 
 			sanitized, dataLine, sanitizeErr := sanitizeSSELine(
@@ -600,6 +613,14 @@ func (p *OpenRouterProvider) streamResponse(
 				metrics.Status = http.StatusBadGateway
 				metrics.Completed = false
 				metrics.LatencyMS = durationMillisPtr(time.Since(start))
+				if !started {
+					return metrics, newAPIError(
+						http.StatusBadGateway,
+						"upstream_error",
+						"NEXORA_UPSTREAM_INVALID_RESPONSE",
+						"Upstream provider returned an invalid streaming response.",
+					)
+				}
 				return metrics, nil
 			}
 
@@ -612,6 +633,10 @@ func (p *OpenRouterProvider) streamResponse(
 			}
 
 			if len(sanitized) > 0 {
+				if !started {
+					w.WriteHeader(http.StatusOK)
+					started = true
+				}
 				if _, writeErr := w.Write(sanitized); writeErr != nil {
 					metrics.Status = 499
 					metrics.Completed = false
@@ -622,17 +647,58 @@ func (p *OpenRouterProvider) streamResponse(
 			}
 		}
 
-		if err != nil {
+		if readErr != nil {
 			metrics.LatencyMS = durationMillisPtr(time.Since(start))
-			if errors.Is(err, io.EOF) {
+
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				metrics.Completed = false
+				if errors.Is(ctxErr, context.DeadlineExceeded) {
+					metrics.Status = http.StatusGatewayTimeout
+					if !started {
+						return metrics, newAPIError(
+							http.StatusGatewayTimeout,
+							"upstream_error",
+							"NEXORA_UPSTREAM_TIMEOUT",
+							"Upstream provider timed out.",
+						)
+					}
+					return metrics, nil
+				}
+				metrics.Status = 499
+				return metrics, nil
+			}
+
+			if errors.Is(readErr, io.EOF) {
 				metrics.Completed = sawDone
-				if !sawDone {
-					metrics.Status = http.StatusBadGateway
+				if sawDone {
+					if !started {
+						w.WriteHeader(http.StatusOK)
+					}
+					return metrics, nil
+				}
+
+				metrics.Status = http.StatusBadGateway
+				if !started {
+					return metrics, newAPIError(
+						http.StatusBadGateway,
+						"upstream_error",
+						"NEXORA_UPSTREAM_INVALID_RESPONSE",
+						"Upstream provider ended before a valid streaming response completed.",
+					)
 				}
 				return metrics, nil
 			}
+
 			metrics.Status = http.StatusBadGateway
 			metrics.Completed = false
+			if !started {
+				return metrics, newAPIError(
+					http.StatusBadGateway,
+					"upstream_error",
+					"NEXORA_UPSTREAM_ERROR",
+					"Upstream provider stream failed.",
+				)
+			}
 			return metrics, nil
 		}
 	}
