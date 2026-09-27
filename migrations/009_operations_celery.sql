@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS background_job_runs (
     worker_name text NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS ux_background_job_runs_task_id
+CREATE INDEX IF NOT EXISTS idx_background_job_runs_task_id
     ON background_job_runs(task_id)
     WHERE task_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_background_job_runs_name_started
