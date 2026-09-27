@@ -1,9 +1,8 @@
 import React,{useEffect,useMemo,useState} from "react";
 import {createRoot} from "react-dom/client";
 import {api,Project,ApiKey,User} from "./api";
+import {AppShell,ConsoleModule} from "./components/AppShell";
 import "./styles.css";
-
-const modules=["Overview","Projects","API Keys","Models","Playground","Usage","Requests","Settings","Status"];
 
 function Dialog({title,children,onClose}:{title:string;children:React.ReactNode;onClose:()=>void}){
  return <div className="dialog-backdrop" role="presentation" onMouseDown={e=>{if(e.currentTarget===e.target)onClose()}}>
@@ -18,7 +17,7 @@ function App(){
  const [user,setUser]=useState<User|null|undefined>(undefined);
  const [authMode,setAuthMode]=useState<"login"|"register">("login");
  const [email,setEmail]=useState(""),[password,setPassword]=useState(""),[displayName,setDisplayName]=useState("");
- const [active,setActive]=useState("Overview"),[key,setKey]=useState(""),[projects,setProjects]=useState<Project[]>([]);
+ const [active,setActive]=useState<ConsoleModule>("Overview"),[key,setKey]=useState(""),[projects,setProjects]=useState<Project[]>([]);
  const [projectId,setProjectId]=useState(""),[keys,setKeys]=useState<ApiKey[]>([]),[data,setData]=useState<any>(null),[error,setError]=useState("");
  const [chatPrompt,setChatPrompt]=useState("Say hello from Nexora"),[model,setModel]=useState("auto-free"),[busy,setBusy]=useState(false);
 
