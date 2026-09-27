@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,12 +11,16 @@ import (
 
 var modelCatalog = NewModelCatalog()
 var apiKeyAuthenticator *APIKeyAuthenticator
+var admissionController *AdmissionController
 
 func main() {
 	var err error
 	apiKeyAuthenticator, err = NewAPIKeyAuthenticator(getenv("DATABASE_URL", ""), getenv("API_KEY_HASH_PEPPER", ""))
 	if err != nil { log.Fatalf("gateway authentication configuration invalid: %v", err) }
 	defer apiKeyAuthenticator.Close()
+	admissionController, err = NewAdmissionController(getenv("REDIS_URL", ""))
+	if err != nil { log.Fatalf("gateway admission configuration invalid: %v", err) }
+	defer admissionController.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
@@ -48,6 +53,11 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	req, apiErr := decodeChatCompletionRequest(w,r)
 	if apiErr != nil { writeAPIError(w,apiErr); return }
 	if _, ok := modelCatalog.Get(req.Model); !ok { writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
+	principal, ok := r.Context().Value(apiKeyContextKey{}).(*APIKeyPrincipal)
+	if !ok { writeAPIError(w,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
+	lease, admissionErr := admissionController.Admit(r.Context(), principal)
+	if admissionErr != nil { writeAPIError(w, admissionErr); return }
+	defer lease.Release(context.WithoutCancel(r.Context()))
 	writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_PROVIDER_NOT_CONFIGURED","Inference provider is not configured yet."))
 }
 
