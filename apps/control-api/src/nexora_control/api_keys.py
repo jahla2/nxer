@@ -17,6 +17,20 @@ from nexora_control.gateway_cache import (
 from nexora_control.security import generate_api_key, hash_api_key, key_prefix
 
 
+def _invalidate_gateway_auth_cache(prefixes: list[str]) -> None:
+    try:
+        invalidate_api_key_prefixes(prefixes)
+    except GatewayAuthCacheError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gateway authorization cache is unavailable. No key changes were applied.",
+        ) from exc
+
+
+def _invalidate_gateway_auth_cache_after_commit(prefixes: list[str]) -> None:
+    invalidate_api_key_prefixes_best_effort(prefixes)
+
+
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 KEY_SELECT = """
