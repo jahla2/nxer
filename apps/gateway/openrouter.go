@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,9 +19,14 @@ import (
 )
 
 type OpenRouterProvider struct {
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	baseURL        string
+	apiKey         string
+	client         *http.Client
+	retryPolicy    RetryPolicy
+	breaker        *CircuitBreaker
+	requestTimeout time.Duration
+	streamTimeout  time.Duration
+	catalogTimeout time.Duration
 }
 
 func (p *OpenRouterProvider) Key() string {
@@ -61,21 +67,31 @@ func NewOpenRouterProvider(baseURL, apiKey string) (*OpenRouterProvider, error) 
 		return nil, errors.New("UPSTREAM_BASE_URL must be a valid HTTPS URL")
 	}
 
+	dialTimeout := time.Duration(getenvInt("PROVIDER_DIAL_TIMEOUT_SECONDS", 5)) * time.Second
+	tlsTimeout := time.Duration(getenvInt("PROVIDER_TLS_TIMEOUT_SECONDS", 5)) * time.Second
+	responseHeaderTimeout := time.Duration(getenvInt("PROVIDER_RESPONSE_HEADER_TIMEOUT_SECONDS", 30)) * time.Second
+	idleTimeout := time.Duration(getenvInt("PROVIDER_IDLE_CONN_TIMEOUT_SECONDS", 90)) * time.Second
+
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:           (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConns:          getenvInt("PROVIDER_MAX_IDLE_CONNS", 100),
+		MaxIdleConnsPerHost:   getenvInt("PROVIDER_MAX_IDLE_CONNS_PER_HOST", 20),
+		IdleConnTimeout:       idleTimeout,
+		TLSHandshakeTimeout:   tlsTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	return &OpenRouterProvider{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		apiKey:         apiKey,
+		retryPolicy:    NewRetryPolicyFromEnv(),
+		breaker:        NewCircuitBreakerFromEnv(),
+		requestTimeout: time.Duration(getenvInt("PROVIDER_REQUEST_TIMEOUT_SECONDS", 90)) * time.Second,
+		streamTimeout:  time.Duration(getenvInt("PROVIDER_STREAM_MAX_DURATION_SECONDS", 300)) * time.Second,
+		catalogTimeout: time.Duration(getenvInt("PROVIDER_CATALOG_TIMEOUT_SECONDS", 15)) * time.Second,
 		client: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -101,7 +117,11 @@ func (p *OpenRouterProvider) newRequest(
 }
 
 func (p *OpenRouterProvider) ListFreeModels(ctx context.Context) ([]DiscoveredModel, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	timeout := p.catalogTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	req, err := p.newRequest(ctx, http.MethodGet, "/models", nil)
