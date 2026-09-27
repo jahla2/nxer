@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from nexora_control.config import get_settings
+from nexora_control.api_keys import router as api_keys_router
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="0.1.0")
+app.include_router(api_keys_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
