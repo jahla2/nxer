@@ -34,8 +34,8 @@ func TestUsageRecorderPersistsUsageAndLastUsed(t *testing.T) {
 
 	var userID, projectID, modelID, apiKeyID string
 	if err := db.QueryRowContext(ctx, `
-		INSERT INTO users (email, password_hash, status)
-		VALUES ($1, 'integration-test-only', 'active')
+		INSERT INTO users (email, password_hash, display_name, status)
+		VALUES ($1, 'integration-test-only', 'Gateway Usage Test', 'active')
 		RETURNING id::text
 	`, email).Scan(&userID); err != nil {
 		t.Fatalf("insert user: %v", err)
