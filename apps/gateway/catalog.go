@@ -35,6 +35,14 @@ func (c *ModelCatalog) Upsert(model Model) {
 	c.models[model.ID]=model
 }
 
+func (c *ModelCatalog) Replace(models []Model) {
+	fresh:=make(map[string]Model,len(models))
+	for _,model:=range models { model.ID=strings.TrimSpace(model.ID); if model.ID!="" { fresh[model.ID]=model } }
+	c.mu.Lock()
+	c.models=fresh
+	c.mu.Unlock()
+}
+
 func (c *ModelCatalog) Get(id string) (Model,bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
