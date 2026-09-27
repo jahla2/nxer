@@ -167,10 +167,13 @@ def cleanup_housekeeping(settings: WorkerSettings) -> dict[str, Any]:
             UPDATE background_job_runs
             SET status='failed',
                 completed_at=now(),
-                duration_ms=GREATEST(
-                    0,
-                    floor(extract(epoch FROM (now() - started_at)) * 1000)::integer
-                ),
+                duration_ms=LEAST(
+                    2147483647,
+                    GREATEST(
+                        0,
+                        floor(extract(epoch FROM (now() - started_at)) * 1000)
+                    )
+                )::integer,
                 error_message=COALESCE(
                     error_message,
                     'Worker execution ended without a completion signal.'
@@ -200,10 +203,17 @@ def cleanup_housekeeping(settings: WorkerSettings) -> dict[str, Any]:
         deleted_usage_events = _delete_batches(
             cur,
             """
-            WITH doomed AS (
-                SELECT ctid
-                FROM usage_events
-                WHERE created_at < now() - make_interval(days => %s)
+            WITH cursor_state AS (
+                SELECT last_created_at, last_event_id
+                FROM usage_aggregation_state
+                WHERE name='usage_daily'
+            ),
+            doomed AS (
+                SELECT ue.ctid
+                FROM usage_events ue
+                CROSS JOIN cursor_state state
+                WHERE ue.created_at < now() - make_interval(days => %s)
+                  AND (ue.created_at, ue.id) <= (state.last_created_at, state.last_event_id)
                 LIMIT %s
             )
             DELETE FROM usage_events
