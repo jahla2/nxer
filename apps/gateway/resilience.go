@@ -292,7 +292,8 @@ func (b *CircuitBreaker) State() CircuitState {
 
 func isRetryableProviderStatus(status int) bool {
 	switch status {
-	case http.StatusTooManyRequests,
+	case http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
 		http.StatusInternalServerError,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
