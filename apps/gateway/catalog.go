@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode"
 )
 
 const (
@@ -132,7 +131,7 @@ func slugModelName(value string) string {
 	lastDash := false
 
 	for _, r := range value {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			lastDash = false
 			continue
