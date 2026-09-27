@@ -45,6 +45,37 @@ class ProjectView(BaseModel):
     updated_at: datetime
 
 
+class ModelCatalogView(BaseModel):
+    id: UUID
+    public_id: str
+    display_name: str
+    context_length: int | None
+    capabilities: dict[str, bool]
+
+
+@router.get("/catalog/models", response_model=list[ModelCatalogView])
+def model_catalog(
+    current_user: UserPrincipal = Depends(get_current_user),
+) -> list[ModelCatalogView]:
+    # The session-authenticated console needs database model UUIDs to configure
+    # API-key scopes. Keep provider/upstream routing metadata private.
+    with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT id, public_id, display_name, context_length, capabilities
+            FROM models
+            WHERE active=true
+              AND is_free=true
+              AND (public_id='auto-free' OR public_id LIKE 'nexora/%')
+            ORDER BY
+                CASE WHEN public_id='auto-free' THEN 0 ELSE 1 END,
+                display_name,
+                public_id
+            """
+        )
+        return [ModelCatalogView(**row) for row in cur.fetchall()]
+
+
 @router.get("/projects", response_model=list[ProjectView])
 def projects(current_user: UserPrincipal = Depends(get_current_user)) -> list[ProjectView]:
     with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
