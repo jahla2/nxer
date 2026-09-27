@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hmac
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
@@ -18,9 +19,15 @@ from nexora_control.auth_security import (
 )
 from nexora_control.config import Settings, get_settings
 from nexora_control.database import get_connection
+from nexora_control.email_delivery import (
+    EmailDeliveryError,
+    send_password_reset_email,
+    send_verification_email,
+)
 
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger("nexora.auth")
 
 ACCESS_COOKIE = "nexora_access"
 REFRESH_COOKIE = "nexora_refresh"
@@ -60,6 +67,15 @@ class PasswordResetConfirm(BaseModel):
     new_password: str = Field(min_length=12, max_length=128)
 
 
+class EmailVerificationRequested(BaseModel):
+    message: str
+    verification_token: str | None = None
+
+
+class EmailVerificationConfirm(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
 @dataclass(frozen=True)
 class UserPrincipal:
     id: str
@@ -78,6 +94,44 @@ def _user_view(row: dict) -> UserView:
         role=row["role"],
         email_verified=row["email_verified"],
     )
+
+
+def _issue_email_verification_token(connection, user_id: str, settings: Settings) -> str:
+    raw_token = generate_session_token("nxa_ev")
+    connection.execute(
+        "UPDATE email_verification_tokens SET used_at=now() WHERE user_id=%s AND used_at IS NULL",
+        (user_id,),
+    )
+    connection.execute(
+        """
+        INSERT INTO email_verification_tokens (user_id, token_hash, expires_at)
+        VALUES (%s,%s,%s)
+        """,
+        (
+            user_id,
+            hash_session_token(raw_token, settings.session_secret),
+            datetime.now(timezone.utc) + timedelta(hours=settings.email_verification_ttl_hours),
+        ),
+    )
+    return raw_token
+
+
+def _send_verification_best_effort(settings: Settings, email: str, token: str) -> bool:
+    try:
+        send_verification_email(settings, email, token)
+        return True
+    except EmailDeliveryError:
+        logger.warning("email verification delivery failed", extra={"event": "email_verification_delivery_failed"})
+        return False
+
+
+def _send_password_reset_best_effort(settings: Settings, email: str, token: str) -> bool:
+    try:
+        send_password_reset_email(settings, email, token)
+        return True
+    except EmailDeliveryError:
+        logger.warning("password reset delivery failed", extra={"event": "password_reset_delivery_failed"})
+        return False
 
 
 def _set_auth_cookies(
