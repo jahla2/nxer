@@ -61,15 +61,6 @@ def test_incremental_usage_aggregation_is_exactly_once() -> None:
     _, _, api_key_id = _seed_identity(settings.database_url)
 
     with psycopg.connect(settings.database_url) as conn:
-        conn.execute(
-            """
-            UPDATE usage_aggregation_state
-            SET last_created_at='1970-01-01 00:00:00+00',
-                last_event_id='00000000-0000-0000-0000-000000000000',
-                updated_at=now()
-            WHERE name='usage_daily'
-            """
-        )
         for index in range(3):
             conn.execute(
                 """
@@ -110,19 +101,12 @@ def test_housekeeping_removes_expired_metadata_in_bounded_batches() -> None:
     with psycopg.connect(settings.database_url) as conn:
         conn.execute(
             """
-            UPDATE usage_aggregation_state
-            SET last_created_at=now(),
-                last_event_id='ffffffff-ffff-ffff-ffff-ffffffffffff',
-                updated_at=now()
-            WHERE name='usage_daily'
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO usage_events(request_id,api_key_id,status,created_at)
-            VALUES (%s,%s,200,%s)
+            INSERT INTO usage_events(
+                request_id,api_key_id,status,created_at,aggregated_at
+            )
+            VALUES (%s,%s,200,%s,%s)
             """,
-            (f"old-{uuid4().hex}", api_key_id, old),
+            (f"old-{uuid4().hex}", api_key_id, old, old),
         )
         conn.execute(
             """
