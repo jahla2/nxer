@@ -207,3 +207,23 @@ def test_project_and_key_mutations_are_owner_scoped() -> None:
         f"/api-keys/{key['id']}/rotate",
         headers={"X-CSRF-Token": csrf(stranger)},
     ).status_code == 404
+
+
+def test_revoke_invalidates_gateway_authorization_cache() -> None:
+    client = TestClient(app)
+    register(client)
+    pid = project_id(client)
+    created = create_key(client, pid, name="Revocation cache test")
+
+    cache = get_gateway_cache_client()
+    cache_key = api_key_cache_key(created["key_prefix"])
+    cache.set(cache_key, b"stale-auth-cache", ex=300)
+    assert cache.exists(cache_key) == 1
+
+    revoked = client.post(
+        f"/api-keys/{created['id']}/revoke",
+        headers={"X-CSRF-Token": csrf(client)},
+    )
+    assert revoked.status_code == 200, revoked.text
+    assert revoked.json()["status"] == "revoked"
+    assert cache.exists(cache_key) == 0
