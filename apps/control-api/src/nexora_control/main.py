@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from nexora_control.config import get_settings
 from nexora_control.api_keys import router as api_keys_router
+from nexora_control.database import get_connection
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name, version="0.1.0")
@@ -12,4 +13,6 @@ def health() -> dict[str, str]:
 
 @app.get("/ready")
 def ready() -> dict[str, str]:
+    with get_connection() as connection:
+        connection.execute("SELECT 1")
     return {"status": "ok", "service": "control-api"}
