@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = Field(default=15, ge=1, le=60)
     refresh_token_ttl_days: int = Field(default=30, ge=1, le=90)
     password_reset_ttl_minutes: int = Field(default=30, ge=5, le=120)
+    password_reset_request_cooldown_seconds: int = Field(default=60, ge=30, le=600)
     email_verification_ttl_hours: int = Field(default=24, ge=1, le=168)
     dashboard_url: str = "http://localhost:8080"
 
