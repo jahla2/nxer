@@ -98,6 +98,9 @@ def test_housekeeping_removes_expired_metadata_in_bounded_batches() -> None:
     user_id, _, api_key_id = _seed_identity(settings.database_url)
     old = datetime.now(timezone.utc) - timedelta(days=120)
 
+    aggregated_request_id=f"old-aggregated-{uuid4().hex}"
+    unaggregated_request_id=f"old-unaggregated-{uuid4().hex}"
+
     with psycopg.connect(settings.database_url) as conn:
         conn.execute(
             """
@@ -106,7 +109,16 @@ def test_housekeeping_removes_expired_metadata_in_bounded_batches() -> None:
             )
             VALUES (%s,%s,200,%s,%s)
             """,
-            (f"old-{uuid4().hex}", api_key_id, old, old),
+            (aggregated_request_id, api_key_id, old, old),
+        )
+        conn.execute(
+            """
+            INSERT INTO usage_events(
+                request_id,api_key_id,status,created_at
+            )
+            VALUES (%s,%s,200,%s)
+            """,
+            (unaggregated_request_id, api_key_id, old),
         )
         conn.execute(
             """
@@ -131,3 +143,14 @@ def test_housekeeping_removes_expired_metadata_in_bounded_batches() -> None:
     assert result["deleted_usage_events"] >= 1
     assert result["deleted_audit_logs"] >= 1
     assert result["deleted_job_runs"] >= 1
+
+    with psycopg.connect(settings.database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT request_id, aggregated_at FROM usage_events WHERE request_id=%s",
+            (unaggregated_request_id,),
+        )
+        retained = cur.fetchone()
+
+    assert retained is not None
+    assert retained[0] == unaggregated_request_id
+    assert retained[1] is None
