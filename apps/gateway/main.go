@@ -11,7 +11,7 @@ import (
 var modelCatalog = NewModelCatalog()
 var apiKeyAuthenticator *APIKeyAuthenticator
 var admissionController *AdmissionController
-var openRouterProvider *OpenRouterProvider
+var inferenceProvider InferenceProvider
 var idempotencyGuard *IdempotencyGuard
 var usageRecorder *UsageRecorder
 var modelCatalogStore *ModelCatalogStore
@@ -45,17 +45,17 @@ func main() {
 	}
 	defer modelCatalogStore.Close()
 
-	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
+	inferenceProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
 	if err != nil {
 		gatewayLogger.Error("gateway provider configuration invalid","event","gateway_config_invalid","component","provider","error",err.Error())
 		os.Exit(1)
 	}
-	if err := refreshModelCatalog(context.Background(),openRouterProvider,modelCatalogStore,modelCatalog); err != nil {
+	if err := refreshModelCatalog(context.Background(),inferenceProvider,modelCatalogStore,modelCatalog); err != nil {
 		gatewayLogger.Error("initial free-model catalog sync failed","event","model_sync_failed","error",err.Error())
 		os.Exit(1)
 	}
 	go syncModelCatalog(
-		openRouterProvider,
+		inferenceProvider,
 		modelCatalogStore,
 		modelCatalog,
 		time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute,
@@ -167,7 +167,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	defer lease.Release(context.WithoutCancel(r.Context()))
 
 	if req.Stream {
-		metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,route,w)
+		metrics,providerErr:=inferenceProvider.Chat(r.Context(),req,route,w)
 		enqueueUsageEvent(r,principal,req,metrics,providerErr)
 		if providerErr!=nil {
 			if reservation!=nil {
@@ -196,7 +196,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if reservation==nil {
-		metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,route,w)
+		metrics,providerErr:=inferenceProvider.Chat(r.Context(),req,route,w)
 		enqueueUsageEvent(r,principal,req,metrics,providerErr)
 		if providerErr!=nil {
 			writeRequestAPIError(w,r,providerErr)
@@ -205,7 +205,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	buffered:=NewBufferedResponseWriter()
-	metrics,providerErr:=openRouterProvider.Chat(r.Context(),req,route,buffered)
+	metrics,providerErr:=inferenceProvider.Chat(r.Context(),req,route,buffered)
 	enqueueUsageEvent(r,principal,req,metrics,providerErr)
 	if providerErr!=nil {
 		reservation.Fail(context.WithoutCancel(r.Context()))
@@ -290,7 +290,7 @@ func getenv(key,fallback string) string { if value:=os.Getenv(key); value!="" { 
 
 func refreshModelCatalog(
 	ctx context.Context,
-	provider *OpenRouterProvider,
+	provider InferenceProvider,
 	store *ModelCatalogStore,
 	catalog *ModelCatalog,
 ) error {
@@ -298,7 +298,7 @@ func refreshModelCatalog(
 	if err != nil {
 		return err
 	}
-	if err := store.Reconcile(ctx, openRouterProviderKey, discovered); err != nil {
+	if err := store.Reconcile(ctx, provider.Key(), discovered); err != nil {
 		return err
 	}
 	models, err := store.ListActiveFree(ctx)
@@ -310,7 +310,7 @@ func refreshModelCatalog(
 }
 
 func syncModelCatalog(
-	provider *OpenRouterProvider,
+	provider InferenceProvider,
 	store *ModelCatalogStore,
 	catalog *ModelCatalog,
 	interval time.Duration,
