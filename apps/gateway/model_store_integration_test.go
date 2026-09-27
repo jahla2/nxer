@@ -151,3 +151,62 @@ func TestModelCatalogStoreReconcilesProviderNeutralAliases(t *testing.T) {
 		t.Fatal("stale provider model should be marked inactive")
 	}
 }
+
+
+func TestGatewayReloadsCatalogFromDatabaseWithoutProviderSync(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if strings.TrimSpace(databaseURL) == "" {
+		t.Skip("DATABASE_URL not configured; skipping PostgreSQL catalog reload test")
+	}
+
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	suffix := fmt.Sprintf("%012x", time.Now().UnixNano()&0xffffffffffff)
+	publicID := "nexora/reload-" + suffix
+	upstreamID := "provider/reload-" + suffix
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO models (
+			public_id, upstream_id, display_name, provider_key,
+			context_length, active, is_free, capabilities
+		)
+		VALUES ($1,$2,'Reload Test','openrouter',4096,true,true,'{"text":true}'::jsonb)
+	`, publicID, upstreamID); err != nil {
+		t.Fatalf("insert reload model: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = db.ExecContext(cleanupCtx, "DELETE FROM models WHERE upstream_id=$1", upstreamID)
+	})
+
+	store, err := NewModelCatalogStore(databaseURL)
+	if err != nil {
+		t.Fatalf("create catalog store: %v", err)
+	}
+	defer store.Close()
+
+	catalog := NewModelCatalog()
+	if _, ok := catalog.Get(publicID); ok {
+		t.Fatalf("test model unexpectedly existed before reload")
+	}
+
+	if err := loadModelCatalogFromStore(ctx, store, catalog); err != nil {
+		t.Fatalf("reload catalog from database: %v", err)
+	}
+
+	reloaded, ok := catalog.Get(publicID)
+	if !ok {
+		t.Fatalf("database model was not loaded into gateway catalog")
+	}
+	if reloaded.UpstreamID != upstreamID || reloaded.ID != publicID {
+		t.Fatalf("unexpected reloaded route: %#v", reloaded)
+	}
+}

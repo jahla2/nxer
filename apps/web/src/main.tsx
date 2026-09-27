@@ -13,6 +13,7 @@ import {UsagePage} from "./pages/UsagePage";
 import {RequestsPage} from "./pages/RequestsPage";
 import {SettingsPage} from "./pages/SettingsPage";
 import {StatusPage} from "./pages/StatusPage";
+import {AdminPage} from "./pages/AdminPage";
 import "./styles.css";
 
 function Dialog({title,children,onClose,wide=false}:{title:string;children:React.ReactNode;onClose:()=>void;wide?:boolean}){
@@ -228,6 +229,8 @@ function App(){
        return <SettingsPage onUserUpdated={setUser}/>;
      case "Status":
        return <StatusPage/>;
+     case "Admin":
+       return user?.role==="admin"?<AdminPage/>:<StatusPage/>;
    }
  }
 

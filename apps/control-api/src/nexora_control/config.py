@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql://nexora:nexora-local-change-me@postgres:5432/nexora"
     redis_url: str = "redis://:nexora-redis-local-change-me@redis:6379/0"
+    free_model_sync_interval_minutes: int = Field(default=10, ge=1, le=1440)
 
     api_key_hash_pepper: str = "local-dev-change-this-to-a-long-random-secret"
     session_secret: str = "local-dev-change-this-to-another-long-random-secret"

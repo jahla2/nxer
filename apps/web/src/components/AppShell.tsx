@@ -10,7 +10,8 @@ export type ConsoleModule=
   |"Usage"
   |"Requests"
   |"Settings"
-  |"Status";
+  |"Status"
+  |"Admin";
 
 type NavGroup="Workspace"|"Observe"|"Account";
 
@@ -18,7 +19,7 @@ type NavItem={
   id:ConsoleModule;
   label:string;
   description:string;
-  icon:"overview"|"projects"|"keys"|"models"|"playground"|"usage"|"requests"|"settings"|"status";
+  icon:"overview"|"projects"|"keys"|"models"|"playground"|"usage"|"requests"|"settings"|"status"|"admin";
   group:NavGroup;
 };
 
@@ -32,6 +33,7 @@ export const NAV_ITEMS:NavItem[]=[
   {id:"Requests",label:"Requests",description:"Inspect recent request status and performance telemetry.",icon:"requests",group:"Observe"},
   {id:"Status",label:"Status",description:"Check control-plane and gateway service availability.",icon:"status",group:"Observe"},
   {id:"Settings",label:"Settings",description:"Review profile and session configuration.",icon:"settings",group:"Account"},
+  {id:"Admin",label:"Admin",description:"Inspect background jobs and audit activity.",icon:"admin",group:"Account"},
 ];
 
 function Icon({name}:{name:NavItem["icon"]}){
@@ -44,6 +46,7 @@ function Icon({name}:{name:NavItem["icon"]}){
   if(name==="usage")return <svg {...common}><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V3"/></svg>;
   if(name==="requests")return <svg {...common}><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><circle cx="3" cy="6" r=".8" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r=".8" fill="currentColor" stroke="none"/><circle cx="3" cy="18" r=".8" fill="currentColor" stroke="none"/></svg>;
   if(name==="settings")return <svg {...common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.1A1.7 1.7 0 0 0 8 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 3.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H1.8V9.6h.1A1.7 1.7 0 0 0 3.6 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8 3.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V1.8h4v.1A1.7 1.7 0 0 0 15 3.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 8a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4h-.1A1.7 1.7 0 0 0 19.4 15z"/></svg>;
+  if(name==="admin")return <svg {...common}><path d="M12 3 20 6v5c0 5-3.4 8.3-8 10-4.6-1.7-8-5-8-10V6z"/><path d="M9 12.5 11 14l4-4"/></svg>;
   return <svg {...common}><path d="M4 12a8 8 0 1 1 16 0 8 8 0 0 1-16 0z"/><path d="M8.5 12.5 11 15l4.5-6"/></svg>;
 }
 
@@ -79,6 +82,7 @@ export function AppShell({
   const activeProject=useMemo(()=>projects.find(project=>project.id===projectId&&project.status==="active")||null,[projects,projectId]);
   const page=NAV_ITEMS.find(item=>item.id===active)??NAV_ITEMS[0];
   const activeProjects=projects.filter(project=>project.status==="active");
+  const visibleItems=NAV_ITEMS.filter(item=>item.id!=="Admin"||user.role==="admin");
   const groups:NavGroup[]=["Workspace","Observe","Account"];
 
   useEffect(()=>{
@@ -122,7 +126,7 @@ export function AppShell({
       <nav className="sidebar-nav">
         {groups.map(group=><div className="nav-group" key={group}>
           <span className="nav-group-label">{group}</span>
-          {NAV_ITEMS.filter(item=>item.group===group).map(item=><button
+          {visibleItems.filter(item=>item.group===group).map(item=><button
             key={item.id}
             className={"nav-item "+(active===item.id?"active":"")}
             onClick={()=>navigate(item.id)}

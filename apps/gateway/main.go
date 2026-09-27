@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"time"
@@ -50,15 +51,17 @@ func main() {
 		gatewayLogger.Error("gateway provider configuration invalid","event","gateway_config_invalid","component","provider","error",err.Error())
 		os.Exit(1)
 	}
-	if err := refreshModelCatalog(context.Background(),inferenceProvider,modelCatalogStore,modelCatalog); err != nil {
-		gatewayLogger.Error("initial free-model catalog sync failed","event","model_sync_failed","error",err.Error())
+	initialCatalogCtx, initialCatalogCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := loadModelCatalogFromStore(initialCatalogCtx, modelCatalogStore, modelCatalog); err != nil {
+		initialCatalogCancel()
+		gatewayLogger.Error("initial model catalog load failed","event","model_catalog_load_failed","error",err.Error())
 		os.Exit(1)
 	}
-	go syncModelCatalog(
-		inferenceProvider,
+	initialCatalogCancel()
+	go reloadModelCatalog(
 		modelCatalogStore,
 		modelCatalog,
-		time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute,
+		time.Duration(getenvInt("CATALOG_RELOAD_INTERVAL_SECONDS",15))*time.Second,
 	)
 
 	mux := http.NewServeMux()
@@ -288,44 +291,38 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func getenv(key,fallback string) string { if value:=os.Getenv(key); value!="" { return value }; return fallback }
 
-func refreshModelCatalog(
+func loadModelCatalogFromStore(
 	ctx context.Context,
-	provider InferenceProvider,
 	store *ModelCatalogStore,
 	catalog *ModelCatalog,
 ) error {
-	discovered, err := provider.ListFreeModels(ctx)
-	if err != nil {
-		return err
-	}
-	if err := store.Reconcile(ctx, provider.Key(), discovered); err != nil {
-		return err
-	}
 	models, err := store.ListActiveFree(ctx)
 	if err != nil {
 		return err
+	}
+	if len(models) == 0 {
+		return errors.New("model catalog is empty")
 	}
 	catalog.Replace(models)
 	return nil
 }
 
-func syncModelCatalog(
-	provider InferenceProvider,
+func reloadModelCatalog(
 	store *ModelCatalogStore,
 	catalog *ModelCatalog,
 	interval time.Duration,
 ) {
-	if interval < time.Minute {
-		interval = time.Minute
+	if interval < 5*time.Second {
+		interval = 5*time.Second
 	}
 	ticker:=time.NewTicker(interval)
 	defer ticker.Stop()
 	for range ticker.C {
-		ctx,cancel:=context.WithTimeout(context.Background(),30*time.Second)
-		err:=refreshModelCatalog(ctx,provider,store,catalog)
+		ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+		err:=loadModelCatalogFromStore(ctx,store,catalog)
 		cancel()
 		if err!=nil {
-			gatewayLogger.Warn("free-model catalog sync failed","event","model_sync_failed","error",err.Error())
+			gatewayLogger.Warn("model catalog reload failed","event","model_catalog_reload_failed","error",err.Error())
 		}
 	}
 }

@@ -88,14 +88,45 @@ jobs:
 
   worker:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: nexora
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nexora"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:8-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nexora
+      REDIS_URL: redis://localhost:6379/0
+      CELERY_BROKER_URL: redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+      OPENROUTER_API_KEY: test-provider-key-not-used-by-unit-tests
+      FREE_MODEL_SYNC_INTERVAL_MINUTES: "10"
     defaults: {run: {working-directory: workers/tasks}}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
-      - run: pip install -e .
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: cd ../.. && MIGRATIONS_DIR="$GITHUB_WORKSPACE/migrations" sh infra/postgres/migrate.sh
+      - run: pip install -e ".[dev]"
       - run: python -m compileall -q .
-      - run: python -c "import worker; assert 'aggregate-usage-every-minute' in worker.app.conf.beat_schedule; assert 'cleanup-idempotency-hourly' in worker.app.conf.beat_schedule"
+      - run: python -c "import worker; assert 'sync-free-model-catalog' in worker.app.conf.beat_schedule; assert 'aggregate-usage-every-minute' in worker.app.conf.beat_schedule; assert 'housekeeping-hourly' in worker.app.conf.beat_schedule"
+      - run: pytest -q
 
   web:
     runs-on: ubuntu-latest
@@ -132,12 +163,17 @@ jobs:
       - run: sh infra/postgres/migrate.sh
       - name: Verify schema
         run: |
-          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "8"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "9"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT is_nullable FROM information_schema.columns WHERE table_name='usage_daily' AND column_name='model_id'")" = "YES"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_daily' AND indexname='ux_usage_daily_dimensions'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='models' AND column_name='provider_key'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='models' AND column_name='context_length'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='email_verification_tokens'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='background_job_runs'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='catalog_sync_state'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='usage_events' AND column_name='aggregated_at'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_events' AND indexname='idx_usage_events_unaggregated'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM models WHERE public_id='auto-free' AND active=true AND is_free=true")" = "1"
 
   compose-config:
     runs-on: ubuntu-latest
