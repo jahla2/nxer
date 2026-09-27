@@ -48,7 +48,7 @@ export function useFocusTrap(
       const items=focusables();
       if(items.length===0){
         event.preventDefault();
-        container.focus();
+        container?.focus();
         return;
       }
 
