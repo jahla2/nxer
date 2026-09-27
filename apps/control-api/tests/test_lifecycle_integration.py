@@ -227,3 +227,103 @@ def test_revoke_invalidates_gateway_authorization_cache() -> None:
     assert revoked.status_code == 200, revoked.text
     assert revoked.json()["status"] == "revoked"
     assert cache.exists(cache_key) == 0
+
+
+
+def test_console_model_catalog_is_authenticated_and_provider_neutral() -> None:
+    anonymous = TestClient(app)
+    assert anonymous.get("/catalog/models").status_code == 401
+
+    client = TestClient(app)
+    register(client)
+
+    safe_id = uuid4()
+    legacy_id = uuid4()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO models(
+                id, public_id, upstream_id, display_name,
+                active, is_free, capabilities, context_length
+            )
+            VALUES
+                (%s,%s,%s,%s,true,true,%s::jsonb,%s),
+                (%s,%s,%s,%s,true,true,%s::jsonb,%s)
+            """,
+            (
+                safe_id,
+                f"nexora/policy-test-{safe_id.hex[:12]}",
+                f"provider/private-{safe_id}",
+                "Policy Test Model",
+                '{"text": true, "streaming": true}',
+                8192,
+                legacy_id,
+                f"legacy/provider-{legacy_id}",
+                f"provider/legacy-{legacy_id}",
+                "Legacy Provider Model",
+                '{"text": true}',
+                4096,
+            ),
+        )
+        connection.commit()
+
+    response = client.get("/catalog/models")
+    assert response.status_code == 200, response.text
+    items = response.json()
+
+    safe = next(item for item in items if item["id"] == str(safe_id))
+    assert safe["public_id"].startswith("nexora/")
+    assert safe["display_name"] == "Policy Test Model"
+    assert safe["context_length"] == 8192
+    assert safe["capabilities"]["text"] is True
+    assert "upstream_id" not in safe
+    assert "provider_key" not in safe
+
+    assert all(item["id"] != str(legacy_id) for item in items)
+
+
+def test_api_key_create_supports_complete_policy_configuration() -> None:
+    client = TestClient(app)
+    register(client)
+    pid = project_id(client)
+
+    model_id = uuid4()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO models(id, public_id, upstream_id, display_name, active, is_free)
+            VALUES (%s,%s,%s,%s,true,true)
+            """,
+            (
+                model_id,
+                f"nexora/create-policy-{model_id.hex[:12]}",
+                f"provider/create-policy-{model_id}",
+                "Create Policy Model",
+            ),
+        )
+        connection.commit()
+
+    created = client.post(
+        "/api-keys",
+        json={
+            "project_id": pid,
+            "name": "Scoped production key",
+            "allow_all_free_models": False,
+            "default_model_id": str(model_id),
+            "model_ids": [str(model_id)],
+            "requests_per_minute": 6,
+            "requests_per_day": 60,
+            "max_concurrent": 2,
+            "expires_at": "2099-01-01T00:00:00Z",
+        },
+        headers={"X-CSRF-Token": csrf(client)},
+    )
+    assert created.status_code == 201, created.text
+    payload = created.json()
+    assert payload["allow_all_free_models"] is False
+    assert payload["default_model_id"] == str(model_id)
+    assert payload["model_ids"] == [str(model_id)]
+    assert payload["requests_per_minute"] == 6
+    assert payload["requests_per_day"] == 60
+    assert payload["max_concurrent"] == 2
+    assert payload["expires_at"].startswith("2099-01-01T00:00:00")
