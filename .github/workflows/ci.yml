@@ -42,7 +42,7 @@ jobs:
       - run: cd ../.. && MIGRATIONS_DIR="$GITHUB_WORKSPACE/migrations" sh infra/postgres/migrate.sh
       - run: go mod tidy
       - run: git diff --exit-code go.mod go.sum
-      - run: go test ./...
+      - run: go test -race ./...
 
   control-api:
     runs-on: ubuntu-latest

@@ -3,11 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestListFreeModelsFiltersPaidAndNonTextModels(t *testing.T) {
@@ -302,5 +307,462 @@ func TestChatStreamingRequiresDoneMarker(t *testing.T) {
 	}
 	if metrics.Status != http.StatusBadGateway {
 		t.Fatalf("expected bad gateway telemetry for truncated stream, got %#v", metrics)
+	}
+}
+
+
+func TestChatRetriesTransientStatusBeforeSuccess(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := attempts.Add(1)
+		if current == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"upstream-id",
+			"model":"vendor/free-text",
+			"choices":[],
+			"usage":{"prompt_tokens":2,"completion_tokens":1}
+		}`))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 2,
+			BaseDelay:   0,
+			MaxDelay:    0,
+		},
+		breaker:        NewCircuitBreaker(3, time.Second),
+		requestTimeout: 2 * time.Second,
+	}
+	route := Model{
+		ID:          "nexora/free-text-test",
+		UpstreamID:  "vendor/free-text",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+	rec := httptest.NewRecorder()
+
+	metrics, apiErr := provider.Chat(context.Background(), req, route, rec)
+	if apiErr != nil {
+		t.Fatalf("unexpected error after retry: %#v", apiErr)
+	}
+	if metrics == nil || !metrics.Completed {
+		t.Fatalf("expected completed response, got %#v", metrics)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected two attempts, got %d", attempts.Load())
+	}
+	if provider.breaker.State() != CircuitClosed {
+		t.Fatalf("successful retry should keep circuit closed, got %s", provider.breaker.State())
+	}
+}
+
+func TestChatCircuitOpensAfterConsecutiveProviderFailures(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 1,
+		},
+		breaker:        NewCircuitBreaker(2, time.Minute),
+		requestTimeout: 2 * time.Second,
+	}
+	route := Model{
+		ID:          "nexora/circuit-test",
+		UpstreamID:  "vendor/circuit-test",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	for i := 0; i < 2; i++ {
+		_, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+		if apiErr == nil {
+			t.Fatal("expected transient provider error")
+		}
+	}
+	if provider.breaker.State() != CircuitOpen {
+		t.Fatalf("expected open circuit, got %s", provider.breaker.State())
+	}
+
+	_, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+	if apiErr == nil || apiErr.Code != "NEXORA_PROVIDER_CIRCUIT_OPEN" {
+		t.Fatalf("expected circuit-open error, got %#v", apiErr)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("open circuit should block network call; attempts=%d", attempts.Load())
+	}
+}
+
+func TestChatProviderDeadlineMapsToGatewayTimeout(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"late","model":"vendor/slow","choices":[]}`))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 1,
+		},
+		breaker:        NewCircuitBreaker(5, time.Second),
+		requestTimeout: 40 * time.Millisecond,
+	}
+	route := Model{
+		ID:          "nexora/slow-test",
+		UpstreamID:  "vendor/slow",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	metrics, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+	if apiErr == nil || apiErr.Code != "NEXORA_UPSTREAM_TIMEOUT" || apiErr.Status != http.StatusGatewayTimeout {
+		t.Fatalf("expected gateway timeout, got metrics=%#v error=%#v", metrics, apiErr)
+	}
+	if metrics == nil || metrics.Status != http.StatusGatewayTimeout {
+		t.Fatalf("unexpected timeout metrics %#v", metrics)
+	}
+}
+
+type failingStreamWriter struct {
+	header http.Header
+	writes int
+}
+
+func (w *failingStreamWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failingStreamWriter) WriteHeader(_ int) {}
+
+func (w *failingStreamWriter) Write(body []byte) (int, error) {
+	w.writes++
+	if w.writes > 1 {
+		return 0, fmt.Errorf("client disconnected")
+	}
+	return len(body), nil
+}
+
+func (w *failingStreamWriter) Flush() {}
+
+func TestChatStreamingClientDisconnectIsIncompleteAndDoesNotTripCircuit(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = w.Write([]byte(`data: {"id":"upstream-1","model":"vendor/stream","choices":[{"delta":{"content":"one"}}]}` + "\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte(`data: {"id":"upstream-1","model":"vendor/stream","choices":[{"delta":{"content":"two"}}]}` + "\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 1,
+		},
+		breaker:       NewCircuitBreaker(1, time.Second),
+		streamTimeout: 2 * time.Second,
+	}
+	route := Model{
+		ID:          "nexora/stream-disconnect-test",
+		UpstreamID:  "vendor/stream",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+	writer := &failingStreamWriter{}
+
+	metrics, apiErr := provider.Chat(context.Background(), req, route, writer)
+	if apiErr != nil {
+		t.Fatalf("disconnect after stream start should not write a second API error: %#v", apiErr)
+	}
+	if metrics == nil || metrics.Completed || metrics.Status != 499 {
+		t.Fatalf("disconnect should be incomplete 499 telemetry, got %#v", metrics)
+	}
+	if provider.breaker.State() != CircuitClosed {
+		t.Fatalf("client disconnect must not trip provider circuit, got %s", provider.breaker.State())
+	}
+}
+
+func TestChatHandlesConcurrentStreamingLoad(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = w.Write([]byte(`data: {"id":"upstream-load","model":"vendor/load","choices":[{"delta":{"content":"ok"}}]}` + "\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 1,
+		},
+		breaker:       NewCircuitBreaker(20, time.Second),
+		streamTimeout: 3 * time.Second,
+	}
+	route := Model{
+		ID:          "nexora/load-test",
+		UpstreamID:  "vendor/load",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "load"}},
+	}
+
+	const clients = 64
+	var wg sync.WaitGroup
+	errs := make(chan error, clients)
+
+	for i := 0; i < clients; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			metrics, apiErr := provider.Chat(context.Background(), req, route, rec)
+			if apiErr != nil {
+				errs <- fmt.Errorf("api error: %s", apiErr.Code)
+				return
+			}
+			if metrics == nil || !metrics.Completed || metrics.Status != http.StatusOK {
+				errs <- fmt.Errorf("unexpected metrics: %#v", metrics)
+				return
+			}
+			if !strings.Contains(rec.Body.String(), "data: [DONE]") {
+				errs <- fmt.Errorf("missing DONE marker")
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if provider.breaker.State() != CircuitClosed {
+		t.Fatalf("healthy concurrent load should leave circuit closed, got %s", provider.breaker.State())
+	}
+}
+
+
+func TestListFreeModelsRetriesTransientCatalogFailure(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := attempts.Add(1)
+		if current == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"vendor/free-text","name":"Free Text","context_length":8192,"pricing":{"prompt":"0","completion":"0"},"architecture":{"output_modalities":["text"]}}
+		]}`))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 2,
+			BaseDelay:   0,
+			MaxDelay:    0,
+		},
+		catalogTimeout: 2 * time.Second,
+	}
+
+	models, err := provider.ListFreeModels(context.Background())
+	if err != nil {
+		t.Fatalf("catalog retry failed: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("expected two catalog attempts, got %d", attempts.Load())
+	}
+	if len(models) != 1 || models[0].UpstreamID != "vendor/free-text" {
+		t.Fatalf("unexpected catalog %#v", models)
+	}
+}
+
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestChatRetriesTransportFailureOnlyBeforeRequestWasWritten(t *testing.T) {
+	route := Model{
+		ID:          "nexora/transport-retry",
+		UpstreamID:  "vendor/transport-retry",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	t.Run("safe pre-write failure retries", func(t *testing.T) {
+		var attempts atomic.Int32
+		client := &http.Client{
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if attempts.Add(1) == 1 {
+					return nil, fmt.Errorf("dial failed before request write")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"id":"upstream","model":"vendor/transport-retry","choices":[]}`,
+					)),
+					Request: r,
+				}, nil
+			}),
+		}
+		provider := &OpenRouterProvider{
+			baseURL: "https://provider.invalid",
+			apiKey:  "secret",
+			client:  client,
+			retryPolicy: RetryPolicy{
+				MaxAttempts: 2,
+				BaseDelay:   0,
+				MaxDelay:    0,
+			},
+			breaker:        NewCircuitBreaker(3, time.Second),
+			requestTimeout: time.Second,
+		}
+
+		metrics, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+		if apiErr != nil {
+			t.Fatalf("safe transport retry should recover: %#v", apiErr)
+		}
+		if metrics == nil || !metrics.Completed {
+			t.Fatalf("expected completed response, got %#v", metrics)
+		}
+		if attempts.Load() != 2 {
+			t.Fatalf("expected retry after pre-write failure, attempts=%d", attempts.Load())
+		}
+	})
+
+	t.Run("post-write failure is not retried", func(t *testing.T) {
+		var attempts atomic.Int32
+		client := &http.Client{
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.WroteRequest != nil {
+					trace.WroteRequest(httptrace.WroteRequestInfo{})
+				}
+				return nil, fmt.Errorf("connection failed after request write")
+			}),
+		}
+		provider := &OpenRouterProvider{
+			baseURL: "https://provider.invalid",
+			apiKey:  "secret",
+			client:  client,
+			retryPolicy: RetryPolicy{
+				MaxAttempts: 2,
+				BaseDelay:   0,
+				MaxDelay:    0,
+			},
+			breaker:        NewCircuitBreaker(3, time.Second),
+			requestTimeout: time.Second,
+		}
+
+		_, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+		if apiErr == nil || apiErr.Code != "NEXORA_UPSTREAM_ERROR" {
+			t.Fatalf("expected transport error, got %#v", apiErr)
+		}
+		if attempts.Load() != 1 {
+			t.Fatalf("post-write failure must not be retried, attempts=%d", attempts.Load())
+		}
+	})
+}
+
+
+func TestChatStreamingTimeoutBeforeFirstFrameReturnsStructuredTimeout(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(150 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 1,
+		},
+		breaker:       NewCircuitBreaker(5, time.Second),
+		streamTimeout: 40 * time.Millisecond,
+	}
+	route := Model{
+		ID:          "nexora/stream-timeout",
+		UpstreamID:  "vendor/stream-timeout",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+	rec := httptest.NewRecorder()
+
+	metrics, apiErr := provider.Chat(context.Background(), req, route, rec)
+	if apiErr == nil || apiErr.Code != "NEXORA_UPSTREAM_TIMEOUT" || apiErr.Status != http.StatusGatewayTimeout {
+		t.Fatalf("expected structured timeout before first frame, metrics=%#v error=%#v", metrics, apiErr)
+	}
+	if metrics == nil || metrics.Status != http.StatusGatewayTimeout || metrics.Completed {
+		t.Fatalf("unexpected timeout metrics %#v", metrics)
+	}
+	if rec.Code == http.StatusOK && rec.Body.Len() > 0 {
+		t.Fatalf("gateway must not expose a successful SSE body before first valid frame: code=%d body=%q", rec.Code, rec.Body.String())
 	}
 }

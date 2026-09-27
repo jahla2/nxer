@@ -11,16 +11,23 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 type OpenRouterProvider struct {
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	baseURL        string
+	apiKey         string
+	client         *http.Client
+	retryPolicy    RetryPolicy
+	breaker        *CircuitBreaker
+	requestTimeout time.Duration
+	streamTimeout  time.Duration
+	catalogTimeout time.Duration
 }
 
 func (p *OpenRouterProvider) Key() string {
@@ -61,21 +68,31 @@ func NewOpenRouterProvider(baseURL, apiKey string) (*OpenRouterProvider, error) 
 		return nil, errors.New("UPSTREAM_BASE_URL must be a valid HTTPS URL")
 	}
 
+	dialTimeout := time.Duration(getenvInt("PROVIDER_DIAL_TIMEOUT_SECONDS", 5)) * time.Second
+	tlsTimeout := time.Duration(getenvInt("PROVIDER_TLS_TIMEOUT_SECONDS", 5)) * time.Second
+	responseHeaderTimeout := time.Duration(getenvInt("PROVIDER_RESPONSE_HEADER_TIMEOUT_SECONDS", 30)) * time.Second
+	idleTimeout := time.Duration(getenvInt("PROVIDER_IDLE_CONN_TIMEOUT_SECONDS", 90)) * time.Second
+
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		DialContext:           (&net.Dialer{Timeout: dialTimeout, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		MaxIdleConns:          getenvInt("PROVIDER_MAX_IDLE_CONNS", 100),
+		MaxIdleConnsPerHost:   getenvInt("PROVIDER_MAX_IDLE_CONNS_PER_HOST", 20),
+		IdleConnTimeout:       idleTimeout,
+		TLSHandshakeTimeout:   tlsTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 
 	return &OpenRouterProvider{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		apiKey:         apiKey,
+		retryPolicy:    NewRetryPolicyFromEnv(),
+		breaker:        NewCircuitBreakerFromEnv(),
+		requestTimeout: time.Duration(getenvInt("PROVIDER_REQUEST_TIMEOUT_SECONDS", 90)) * time.Second,
+		streamTimeout:  time.Duration(getenvInt("PROVIDER_STREAM_MAX_DURATION_SECONDS", 300)) * time.Second,
+		catalogTimeout: time.Duration(getenvInt("PROVIDER_CATALOG_TIMEOUT_SECONDS", 15)) * time.Second,
 		client: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -101,23 +118,70 @@ func (p *OpenRouterProvider) newRequest(
 }
 
 func (p *OpenRouterProvider) ListFreeModels(ctx context.Context) ([]DiscoveredModel, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	timeout := p.catalogTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := p.newRequest(ctx, http.MethodGet, "/models", nil)
-	if err != nil {
-		return nil, err
+	policy := p.effectiveRetryPolicy()
+	var resp *http.Response
+	var err error
+
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		req, requestErr := p.newRequest(ctx, http.MethodGet, "/models", nil)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+
+		resp, err = p.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil || attempt >= policy.MaxAttempts {
+				return nil, err
+			}
+			delay := policy.Backoff(attempt, "")
+			logProviderRetry(ctx, p.Key(), attempt, policy.MaxAttempts, delay, "catalog_transport_error")
+			if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+				return nil, sleepErr
+			}
+			continue
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break
+		}
+
+		statusCode := resp.StatusCode
+		retryAfter := resp.Header.Get("Retry-After")
+		drainAndClose(resp.Body)
+		resp = nil
+
+		if !isRetryableProviderStatus(statusCode) || attempt >= policy.MaxAttempts {
+			return nil, errors.New("upstream model catalog request failed")
+		}
+
+		delay := policy.Backoff(attempt, retryAfter)
+		logProviderRetry(
+			ctx,
+			p.Key(),
+			attempt,
+			policy.MaxAttempts,
+			delay,
+			"catalog_status_"+strconv.Itoa(statusCode),
+		)
+		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+			return nil, sleepErr
+		}
 	}
 
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp == nil {
+		if err != nil {
+			return nil, err
+		}
 		return nil, errors.New("upstream model catalog request failed")
 	}
+	defer resp.Body.Close()
 
 	var payload upstreamModelsResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&payload); err != nil {
@@ -164,11 +228,31 @@ func (p *OpenRouterProvider) Chat(
 		)
 	}
 
+	permit, allowed := p.acquireCircuitPermit()
+	if !allowed {
+		gatewayLogger.Warn(
+			"provider circuit open",
+			"event", "provider_circuit_open",
+			"request_id", requestIDFromContext(ctx),
+			"provider", p.Key(),
+		)
+		return metricsFromStart(start, http.StatusServiceUnavailable, false), newAPIError(
+			http.StatusServiceUnavailable,
+			"service_unavailable",
+			"NEXORA_PROVIDER_CIRCUIT_OPEN",
+			"Model provider is temporarily unavailable.",
+		)
+	}
+
+	requestCtx, cancel := p.withRequestTimeout(ctx, req.Stream)
+	defer cancel()
+
 	upstreamReq := *req
 	upstreamReq.Model = route.UpstreamID
 
 	payload, err := json.Marshal(upstreamReq)
 	if err != nil {
+		permit.Neutral()
 		return metricsFromStart(start, http.StatusInternalServerError, false), newAPIError(
 			http.StatusInternalServerError,
 			"server_error",
@@ -177,60 +261,275 @@ func (p *OpenRouterProvider) Chat(
 		)
 	}
 
-	upReq, err := p.newRequest(ctx, http.MethodPost, "/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
-			http.StatusBadGateway,
-			"upstream_error",
-			"NEXORA_UPSTREAM_ERROR",
-			"Unable to create upstream request.",
-		)
+	policy := p.effectiveRetryPolicy()
+	if permit != nil && permit.halfOpen {
+		policy.MaxAttempts = 1
 	}
-	if req.Stream {
+
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		resp, wroteRequest, requestErr := p.doChatAttempt(
+			requestCtx,
+			payload,
+			req.Stream,
+		)
+
+		if requestErr != nil {
+			if resp != nil {
+				drainAndClose(resp.Body)
+			}
+			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(requestErr, context.Canceled) {
+				permit.Neutral()
+				return metricsFromStart(start, 499, false), nil
+			}
+
+			apiErr := newAPIError(
+				http.StatusBadGateway,
+				"upstream_error",
+				"NEXORA_UPSTREAM_ERROR",
+				"Upstream provider request failed.",
+			)
+			if errors.Is(requestCtx.Err(), context.DeadlineExceeded) ||
+				errors.Is(requestErr, context.DeadlineExceeded) {
+				apiErr = newAPIError(
+					http.StatusGatewayTimeout,
+					"upstream_error",
+					"NEXORA_UPSTREAM_TIMEOUT",
+					"Upstream provider timed out.",
+				)
+			}
+
+			canRetry := !wroteRequest &&
+				attempt < policy.MaxAttempts &&
+				requestCtx.Err() == nil
+			if canRetry {
+				delay := policy.Backoff(attempt, "")
+				logProviderRetry(ctx, p.Key(), attempt, policy.MaxAttempts, delay, "transport_error")
+				if sleepErr := sleepWithContext(requestCtx, delay); sleepErr == nil {
+					continue
+				} else if errors.Is(ctx.Err(), context.Canceled) {
+					permit.Neutral()
+					return metricsFromStart(start, 499, false), nil
+				} else if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+					permit.Failure()
+					timeoutErr := newAPIError(
+						http.StatusGatewayTimeout,
+						"upstream_error",
+						"NEXORA_UPSTREAM_TIMEOUT",
+						"Upstream provider timed out.",
+					)
+					return metricsFromStart(start, http.StatusGatewayTimeout, false), timeoutErr
+				}
+			}
+
+			permit.Failure()
+			return metricsFromStart(start, apiErr.Status, false), apiErr
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			statusCode := resp.StatusCode
+			retryAfter := resp.Header.Get("Retry-After")
+			drainAndClose(resp.Body)
+
+			apiErr := mapUpstreamStatus(statusCode)
+			canRetry := isRetryableProviderStatus(statusCode) &&
+				attempt < policy.MaxAttempts &&
+				requestCtx.Err() == nil
+			if canRetry {
+				delay := policy.Backoff(attempt, retryAfter)
+				logProviderRetry(
+					ctx,
+					p.Key(),
+					attempt,
+					policy.MaxAttempts,
+					delay,
+					"status_"+strconv.Itoa(statusCode),
+				)
+				if sleepErr := sleepWithContext(requestCtx, delay); sleepErr == nil {
+					continue
+				} else if errors.Is(ctx.Err(), context.Canceled) {
+					permit.Neutral()
+					return metricsFromStart(start, 499, false), nil
+				} else if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+					permit.Failure()
+					timeoutErr := newAPIError(
+						http.StatusGatewayTimeout,
+						"upstream_error",
+						"NEXORA_UPSTREAM_TIMEOUT",
+						"Upstream provider timed out.",
+					)
+					return metricsFromStart(start, http.StatusGatewayTimeout, false), timeoutErr
+				}
+			}
+
+			if isRetryableProviderStatus(statusCode) {
+				permit.Failure()
+			} else {
+				permit.Success()
+			}
+			return metricsFromStart(start, apiErr.Status, false), apiErr
+		}
+
+		if req.Stream {
+			contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+			if !strings.Contains(contentType, "text/event-stream") {
+				drainAndClose(resp.Body)
+				permit.Failure()
+				return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
+					http.StatusBadGateway,
+					"upstream_error",
+					"NEXORA_UPSTREAM_INVALID_RESPONSE",
+					"Upstream provider returned an invalid streaming response.",
+				)
+			}
+
+			metrics, apiErr := p.streamResponse(
+				requestCtx,
+				resp,
+				route.ID,
+				w,
+				start,
+			)
+			_ = resp.Body.Close()
+
+			if apiErr != nil {
+				permit.Failure()
+				return metrics, apiErr
+			}
+			if metrics == nil {
+				permit.Failure()
+				return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
+					http.StatusBadGateway,
+					"upstream_error",
+					"NEXORA_UPSTREAM_ERROR",
+					"Upstream provider response did not complete.",
+				)
+			}
+			if metrics.Status == 499 {
+				permit.Neutral()
+				return metrics, nil
+			}
+			if !metrics.Completed {
+				permit.Failure()
+				return metrics, nil
+			}
+
+			permit.Success()
+			return metrics, nil
+		}
+
+		metrics, apiErr := p.jsonResponse(resp, route.ID, w, start)
+		_ = resp.Body.Close()
+		if apiErr != nil || metrics == nil || !metrics.Completed {
+			permit.Failure()
+			return metrics, apiErr
+		}
+
+		permit.Success()
+		return metrics, nil
+	}
+
+	permit.Failure()
+	return metricsFromStart(start, http.StatusServiceUnavailable, false), newAPIError(
+		http.StatusServiceUnavailable,
+		"service_unavailable",
+		"NEXORA_UPSTREAM_ERROR",
+		"Model provider is temporarily unavailable.",
+	)
+}
+
+func (p *OpenRouterProvider) acquireCircuitPermit() (*CircuitPermit, bool) {
+	if p.breaker == nil {
+		return &CircuitPermit{}, true
+	}
+	return p.breaker.Acquire()
+}
+
+func (p *OpenRouterProvider) effectiveRetryPolicy() RetryPolicy {
+	policy := p.retryPolicy
+	if policy.MaxAttempts < 1 {
+		policy.MaxAttempts = 1
+	}
+	if policy.MaxAttempts > 4 {
+		policy.MaxAttempts = 4
+	}
+	if policy.MaxDelay < policy.BaseDelay {
+		policy.MaxDelay = policy.BaseDelay
+	}
+	return policy
+}
+
+func (p *OpenRouterProvider) withRequestTimeout(
+	ctx context.Context,
+	stream bool,
+) (context.Context, context.CancelFunc) {
+	timeout := p.requestTimeout
+	if stream {
+		timeout = p.streamTimeout
+	}
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (p *OpenRouterProvider) doChatAttempt(
+	ctx context.Context,
+	payload []byte,
+	stream bool,
+) (*http.Response, bool, error) {
+	var wroteRequest atomic.Bool
+	trace := &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wroteRequest.Store(true)
+			}
+		},
+	}
+
+	attemptCtx := httptrace.WithClientTrace(ctx, trace)
+	upReq, err := p.newRequest(
+		attemptCtx,
+		http.MethodPost,
+		"/chat/completions",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if stream {
 		upReq.Header.Set("Accept", "text/event-stream")
 	}
 
 	resp, err := p.client.Do(upReq)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return metricsFromStart(start, http.StatusGatewayTimeout, false), newAPIError(
-				http.StatusGatewayTimeout,
-				"upstream_error",
-				"NEXORA_UPSTREAM_TIMEOUT",
-				"Upstream provider timed out.",
-			)
-		}
-		if errors.Is(err, context.Canceled) {
-			return metricsFromStart(start, 499, false), nil
-		}
-		return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
-			http.StatusBadGateway,
-			"upstream_error",
-			"NEXORA_UPSTREAM_ERROR",
-			"Upstream provider request failed.",
-		)
-	}
-	defer resp.Body.Close()
+	return resp, wroteRequest.Load(), err
+}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		apiErr := mapUpstreamStatus(resp.StatusCode)
-		return metricsFromStart(start, apiErr.Status, false), apiErr
-	}
+func logProviderRetry(
+	ctx context.Context,
+	provider string,
+	attempt int,
+	maxAttempts int,
+	delay time.Duration,
+	reason string,
+) {
+	gatewayLogger.Warn(
+		"provider request retry",
+		"event", "provider_retry",
+		"request_id", requestIDFromContext(ctx),
+		"provider", provider,
+		"attempt", attempt,
+		"max_attempts", maxAttempts,
+		"delay_ms", delay.Milliseconds(),
+		"reason", reason,
+	)
+}
 
-	if req.Stream {
-		contentType := strings.ToLower(resp.Header.Get("Content-Type"))
-		if !strings.Contains(contentType, "text/event-stream") {
-			return metricsFromStart(start, http.StatusBadGateway, false), newAPIError(
-				http.StatusBadGateway,
-				"upstream_error",
-				"NEXORA_UPSTREAM_INVALID_RESPONSE",
-				"Upstream provider returned an invalid streaming response.",
-			)
-		}
-		return p.streamResponse(ctx, resp, route.ID, w, start)
+func drainAndClose(body io.ReadCloser) {
+	if body == nil {
+		return
 	}
-
-	return p.jsonResponse(resp, route.ID, w, start)
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 32<<10))
+	_ = body.Close()
 }
 
 func (p *OpenRouterProvider) jsonResponse(
@@ -295,27 +594,40 @@ func (p *OpenRouterProvider) streamResponse(
 		)
 	}
 
+	// Prepare streaming headers but do not commit HTTP 200 until the first valid
+	// SSE frame is ready. This preserves the ability to return a structured
+	// timeout/invalid-response error if the provider stalls before first token.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
 
 	metrics := &ProviderMetrics{Status: http.StatusOK}
 	reader := bufio.NewReaderSize(resp.Body, 32*1024)
 	firstDataSeen := false
 	sawDone := false
+	started := false
 	publicCompletionID := newCompletionID()
 
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, readErr := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			select {
-			case <-ctx.Done():
-				metrics.Status = 499
+			if ctxErr := ctx.Err(); ctxErr != nil {
 				metrics.Completed = false
 				metrics.LatencyMS = durationMillisPtr(time.Since(start))
+				if errors.Is(ctxErr, context.DeadlineExceeded) {
+					metrics.Status = http.StatusGatewayTimeout
+					if !started {
+						return metrics, newAPIError(
+							http.StatusGatewayTimeout,
+							"upstream_error",
+							"NEXORA_UPSTREAM_TIMEOUT",
+							"Upstream provider timed out.",
+						)
+					}
+					return metrics, nil
+				}
+				metrics.Status = 499
 				return metrics, nil
-			default:
 			}
 
 			sanitized, dataLine, sanitizeErr := sanitizeSSELine(
@@ -328,6 +640,14 @@ func (p *OpenRouterProvider) streamResponse(
 				metrics.Status = http.StatusBadGateway
 				metrics.Completed = false
 				metrics.LatencyMS = durationMillisPtr(time.Since(start))
+				if !started {
+					return metrics, newAPIError(
+						http.StatusBadGateway,
+						"upstream_error",
+						"NEXORA_UPSTREAM_INVALID_RESPONSE",
+						"Upstream provider returned an invalid streaming response.",
+					)
+				}
 				return metrics, nil
 			}
 
@@ -340,6 +660,13 @@ func (p *OpenRouterProvider) streamResponse(
 			}
 
 			if len(sanitized) > 0 {
+				if !started && !dataLine {
+					continue
+				}
+				if !started {
+					w.WriteHeader(http.StatusOK)
+					started = true
+				}
 				if _, writeErr := w.Write(sanitized); writeErr != nil {
 					metrics.Status = 499
 					metrics.Completed = false
@@ -350,17 +677,58 @@ func (p *OpenRouterProvider) streamResponse(
 			}
 		}
 
-		if err != nil {
+		if readErr != nil {
 			metrics.LatencyMS = durationMillisPtr(time.Since(start))
-			if errors.Is(err, io.EOF) {
+
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				metrics.Completed = false
+				if errors.Is(ctxErr, context.DeadlineExceeded) {
+					metrics.Status = http.StatusGatewayTimeout
+					if !started {
+						return metrics, newAPIError(
+							http.StatusGatewayTimeout,
+							"upstream_error",
+							"NEXORA_UPSTREAM_TIMEOUT",
+							"Upstream provider timed out.",
+						)
+					}
+					return metrics, nil
+				}
+				metrics.Status = 499
+				return metrics, nil
+			}
+
+			if errors.Is(readErr, io.EOF) {
 				metrics.Completed = sawDone
-				if !sawDone {
-					metrics.Status = http.StatusBadGateway
+				if sawDone {
+					if !started {
+						w.WriteHeader(http.StatusOK)
+					}
+					return metrics, nil
+				}
+
+				metrics.Status = http.StatusBadGateway
+				if !started {
+					return metrics, newAPIError(
+						http.StatusBadGateway,
+						"upstream_error",
+						"NEXORA_UPSTREAM_INVALID_RESPONSE",
+						"Upstream provider ended before a valid streaming response completed.",
+					)
 				}
 				return metrics, nil
 			}
+
 			metrics.Status = http.StatusBadGateway
 			metrics.Completed = false
+			if !started {
+				return metrics, newAPIError(
+					http.StatusBadGateway,
+					"upstream_error",
+					"NEXORA_UPSTREAM_ERROR",
+					"Upstream provider stream failed.",
+				)
+			}
 			return metrics, nil
 		}
 	}
