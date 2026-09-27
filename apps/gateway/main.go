@@ -12,6 +12,7 @@ import (
 var modelCatalog = NewModelCatalog()
 var apiKeyAuthenticator *APIKeyAuthenticator
 var admissionController *AdmissionController
+var openRouterProvider *OpenRouterProvider
 
 func main() {
 	var err error
@@ -21,6 +22,10 @@ func main() {
 	admissionController, err = NewAdmissionController(getenv("REDIS_URL", ""))
 	if err != nil { log.Fatalf("gateway admission configuration invalid: %v", err) }
 	defer admissionController.Close()
+	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
+	if err != nil { log.Fatalf("gateway provider configuration invalid: %v",err) }
+	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil { log.Fatalf("initial free-model catalog sync failed: %v",err) }
+	go syncModelCatalog(openRouterProvider,modelCatalog,time.Duration(getenvInt("FREE_MODEL_SYNC_INTERVAL_MINUTES",10))*time.Minute)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
@@ -58,7 +63,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	lease, admissionErr := admissionController.Admit(r.Context(), principal)
 	if admissionErr != nil { writeAPIError(w, admissionErr); return }
 	defer lease.Release(context.WithoutCancel(r.Context()))
-	writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_PROVIDER_NOT_CONFIGURED","Inference provider is not configured yet."))
+	if providerErr:=openRouterProvider.Chat(r.Context(),req,w); providerErr!=nil { writeAPIError(w,providerErr); return }
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -76,3 +81,12 @@ func loggingMiddleware(next http.Handler) http.Handler {
 }
 
 func getenv(key,fallback string) string { if value:=os.Getenv(key); value!="" { return value }; return fallback }
+
+func syncModelCatalog(provider *OpenRouterProvider,catalog *ModelCatalog,interval time.Duration){
+	if interval < time.Minute { interval=time.Minute }
+	ticker:=time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err:=provider.SyncFreeModels(context.Background(),catalog);err!=nil { log.Printf("free-model catalog sync failed: %v",err) }
+	}
+}
