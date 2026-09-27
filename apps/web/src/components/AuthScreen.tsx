@@ -166,7 +166,7 @@ export function AuthScreen({
         <p className="subtitle">Choose a new password for your Nexora account. Existing sessions will be revoked.</p>
         <form onSubmit={confirmReset}>
           {!resetTokenProp&&<label>Reset token<input value={resetToken} onChange={event=>setResetToken(event.target.value)} autoComplete="off" required data-autofocus="true"/></label>}
-          <label>New password<input type="password" value={newPassword} onChange={event=>setNewPassword(event.target.value)} minLength={12} autoComplete="new-password" required data-autofocus={Boolean(resetTokenProp)||undefined}/></label>
+          <label>New password<input type="password" value={newPassword} onChange={event=>setNewPassword(event.target.value)} minLength={12} autoComplete="new-password" required data-autofocus={resetTokenProp?"true":undefined}/></label>
           <label>Confirm password<input type="password" value={confirmPassword} onChange={event=>setConfirmPassword(event.target.value)} minLength={12} autoComplete="new-password" required/></label>
           <p className="form-hint">Use at least 12 characters. A successful reset signs out all active sessions.</p>
           {notice&&<p className="success-message" role="status">{notice}</p>}
@@ -202,7 +202,7 @@ export function AuthScreen({
       <p className="subtitle">{mode==="login"?"Access your Nexora developer console.":"Create your developer account and first project."}</p>
       <form onSubmit={submitAuth}>
         {mode==="register"&&<label>Name<input value={displayName} onChange={event=>setDisplayName(event.target.value)} minLength={2} autoComplete="name" required data-autofocus="true"/></label>}
-        <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus={mode==="login"||undefined}/></label>
+        <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus={mode==="login"?"true":undefined}/></label>
         <label>Password<input type="password" value={password} onChange={event=>setPassword(event.target.value)} minLength={mode==="register"?12:1} autoComplete={mode==="register"?"new-password":"current-password"} required/></label>
         {mode==="register"&&<p className="form-hint">Use at least 12 characters. Nexora will create a verification link for your email address.</p>}
         {error&&<p className="error" role="alert">{error}</p>}
