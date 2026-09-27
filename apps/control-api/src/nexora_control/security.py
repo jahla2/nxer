@@ -7,7 +7,7 @@ API_KEY_PREFIX = "nxa_live_"
 
 def generate_api_key() -> str:
     public_prefix = secrets.token_hex(6)
-    secret = secrets.token_urlsafe(32)
+    secret = secrets.token_urlsafe(48)
     return f"{API_KEY_PREFIX}{public_prefix}.{secret}"
 
 
