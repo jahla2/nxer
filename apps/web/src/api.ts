@@ -36,6 +36,82 @@ export type ApiKey={
 
 export type ApiKeyCreated=ApiKey&{api_key:string};
 
+export type NexoraModel={
+  id:string;
+  object:string;
+  owned_by:string;
+  display_name?:string;
+  context_length?:number;
+  capabilities?:Record<string,boolean>;
+  status?:string;
+  free:boolean;
+};
+
+export type ModelsResponse={
+  object?:string;
+  data:NexoraModel[];
+};
+
+export type UsageDaily={
+  usage_date:string;
+  api_key_id:string;
+  model_id:string|null;
+  requests:number;
+  prompt_tokens:number;
+  completion_tokens:number;
+};
+
+export type RequestEvent={
+  request_id:string;
+  api_key_id:string;
+  model_id:string|null;
+  status:number;
+  ttft_ms:number|null;
+  latency_ms:number|null;
+  prompt_tokens:number|null;
+  completion_tokens:number|null;
+  created_at:string;
+};
+
+export type ConsoleSettings={
+  profile:{
+    id:string;
+    email:string;
+    display_name:string;
+    role:string;
+    email_verified:boolean;
+  };
+  session:{
+    access_ttl_minutes:number;
+    refresh_ttl_days:number;
+  };
+};
+
+export type HealthResponse={
+  status:string;
+  service?:string;
+};
+
+export type ChatCompletion={
+  id:string;
+  object?:string;
+  created?:number;
+  model:string;
+  choices:Array<{
+    index?:number;
+    finish_reason?:string|null;
+    message?:{
+      role?:string;
+      content?:string;
+    };
+  }>;
+  usage?:{
+    prompt_tokens?:number;
+    completion_tokens?:number;
+    total_tokens?:number;
+  };
+};
+
 const CONTROL="/api";
 const GATEWAY="/v1";
 
@@ -77,8 +153,8 @@ export const api={
     }
   }),
 
-  controlHealth:()=>rawJson<{status:string}>(`${CONTROL}/health`),
-  gatewayHealth:()=>rawJson<{status:string}>("/health"),
+  controlHealth:()=>rawJson<HealthResponse>(`${CONTROL}/health`),
+  gatewayHealth:()=>rawJson<HealthResponse>("/health"),
 
   projects:()=>rawJson<Project[]>(`${CONTROL}/projects`),
   createProject:(name:string)=>rawJson<Project>(`${CONTROL}/projects`,{
@@ -105,14 +181,14 @@ export const api={
     method:"POST",headers:mutationHeaders()
   }),
 
-  usage:()=>rawJson<any[]>(`${CONTROL}/usage`),
-  requests:()=>rawJson<any[]>(`${CONTROL}/requests`),
-  settings:()=>rawJson<any>(`${CONTROL}/settings`),
+  usage:()=>rawJson<UsageDaily[]>(`${CONTROL}/usage`),
+  requests:()=>rawJson<RequestEvent[]>(`${CONTROL}/requests`),
+  settings:()=>rawJson<ConsoleSettings>(`${CONTROL}/settings`),
 
-  models:(key:string)=>rawJson<{data:any[]}>(`${GATEWAY}/models`,{
+  models:(key:string)=>rawJson<ModelsResponse>(`${GATEWAY}/models`,{
     headers:{Authorization:`Bearer ${key}`}
   },false),
-  chat:(key:string,model:string,prompt:string)=>rawJson<any>(`${GATEWAY}/chat/completions`,{
+  chat:(key:string,model:string,prompt:string)=>rawJson<ChatCompletion>(`${GATEWAY}/chat/completions`,{
     method:"POST",
     headers:{
       Authorization:`Bearer ${key}`,
