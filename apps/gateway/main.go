@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"time"
@@ -300,7 +301,7 @@ func loadModelCatalogFromStore(
 		return err
 	}
 	if len(models) == 0 {
-		return context.Canceled
+		return errors.New("model catalog is empty")
 	}
 	catalog.Replace(models)
 	return nil
