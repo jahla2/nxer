@@ -1,7 +1,8 @@
 import React,{useEffect,useMemo,useState} from "react";
 import {createRoot} from "react-dom/client";
-import {api,Project,ApiKey,User} from "./api";
+import {api,Project,ApiKey,ApiKeyUpdateInput,ConsoleModel,User} from "./api";
 import {AppShell,ConsoleModule} from "./components/AppShell";
+import {ApiKeyPolicyForm} from "./components/ApiKeyPolicyForm";
 import {OverviewPage} from "./pages/OverviewPage";
 import {ProjectsPage} from "./pages/ProjectsPage";
 import {ApiKeysPage} from "./pages/ApiKeysPage";
@@ -13,9 +14,9 @@ import {SettingsPage} from "./pages/SettingsPage";
 import {StatusPage} from "./pages/StatusPage";
 import "./styles.css";
 
-function Dialog({title,children,onClose}:{title:string;children:React.ReactNode;onClose:()=>void}){
+function Dialog({title,children,onClose,wide=false}:{title:string;children:React.ReactNode;onClose:()=>void;wide?:boolean}){
  return <div className="dialog-backdrop" role="presentation" onMouseDown={event=>{if(event.currentTarget===event.target)onClose()}}>
-   <section className="dialog" role="dialog" aria-modal="true" aria-label={title}>
+   <section className={"dialog "+(wide?"dialog-wide":"")} role="dialog" aria-modal="true" aria-label={title}>
      <div className="dialog-head"><h3>{title}</h3><button className="icon-button" onClick={onClose} aria-label="Close">×</button></div>
      {children}
    </section>
@@ -34,6 +35,7 @@ function App(){
  const [projects,setProjects]=useState<Project[]>([]);
  const [projectId,setProjectId]=useState("");
  const [keys,setKeys]=useState<ApiKey[]>([]);
+ const [catalogModels,setCatalogModels]=useState<ConsoleModel[]>([]);
  const [error,setError]=useState("");
  const [chatPrompt,setChatPrompt]=useState("Say hello from Nexora");
  const [model,setModel]=useState("auto-free");
@@ -42,10 +44,6 @@ function App(){
  const [projectDialog,setProjectDialog]=useState<{mode:"create"|"rename";project?:Project}|null>(null);
  const [projectName,setProjectName]=useState("");
  const [keyDialog,setKeyDialog]=useState<{mode:"create"|"edit";apiKey?:ApiKey}|null>(null);
- const [keyName,setKeyName]=useState("");
- const [rpm,setRpm]=useState("");
- const [daily,setDaily]=useState("");
- const [concurrent,setConcurrent]=useState("");
  const [secretDialog,setSecretDialog]=useState<{label:string;secret:string}|null>(null);
  const [confirmDialog,setConfirmDialog]=useState<{title:string;message:string;action:()=>Promise<void>}|null>(null);
 
@@ -66,8 +64,18 @@ function App(){
    setKeys(await api.keys(pid));
  }
 
+ async function loadCatalogModels(){
+   if(!user){setCatalogModels([]);return}
+   const models=await api.catalogModels();
+   setCatalogModels(models);
+ }
+
  useEffect(()=>{api.me().catch(()=>api.refresh()).then(setUser).catch(()=>setUser(null))},[]);
- useEffect(()=>{if(user)loadProjects().catch(err=>setError(err instanceof Error?err.message:String(err)))},[user]);
+ useEffect(()=>{
+   if(!user)return;
+   loadProjects().catch(err=>setError(err instanceof Error?err.message:String(err)));
+   loadCatalogModels().catch(()=>setCatalogModels([]));
+ },[user]);
  useEffect(()=>{loadKeys().catch(()=>setKeys([]))},[user,projectId]);
 
  async function submitAuth(event:React.FormEvent){
@@ -92,6 +100,7 @@ function App(){
      setUser(null);
      setProjects([]);
      setKeys([]);
+     setCatalogModels([]);
      setProjectId("");
      setKey("");
      setError("");
@@ -147,43 +156,36 @@ function App(){
    });
  }
 
+ function refreshCatalogForPolicy(){
+   loadCatalogModels().catch(err=>setError(err instanceof Error?err.message:String(err)));
+ }
+
  function openCreateKey(){
-   setKeyName("Development key");
-   setRpm("");
-   setDaily("");
-   setConcurrent("");
+   refreshCatalogForPolicy();
    setKeyDialog({mode:"create"});
  }
 
  function openEditKey(apiKey:ApiKey){
-   setKeyName(apiKey.name);
-   setRpm(apiKey.requests_per_minute?.toString()||"");
-   setDaily(apiKey.requests_per_day?.toString()||"");
-   setConcurrent(apiKey.max_concurrent?.toString()||"");
+   refreshCatalogForPolicy();
    setKeyDialog({mode:"edit",apiKey});
  }
 
- async function submitKey(event:React.FormEvent){
-   event.preventDefault();
+ async function saveKeyPolicy(payload:ApiKeyUpdateInput){
    if(!keyDialog||!projectId)return;
    setBusy(true);setError("");
    try{
      if(keyDialog.mode==="create"){
-       const created=await api.createKey(projectId,keyName);
+       const created=await api.createKey({project_id:projectId,...payload});
        setSecretDialog({label:`New API key · ${created.name}`,secret:created.api_key});
-       await loadKeys();
      }else if(keyDialog.apiKey){
-       await api.updateKey(keyDialog.apiKey.id,{
-         name:keyName,
-         requests_per_minute:rpm?Number(rpm):null,
-         requests_per_day:daily?Number(daily):null,
-         max_concurrent:concurrent?Number(concurrent):null,
-       });
-       await loadKeys();
+       await api.updateKey(keyDialog.apiKey.id,payload);
      }
+     await loadKeys();
      setKeyDialog(null);
    }catch(err){
-     setError(err instanceof Error?err.message:String(err));
+     const message=err instanceof Error?err.message:String(err);
+     setError(message);
+     throw err;
    }finally{
      setBusy(false);
    }
@@ -228,7 +230,7 @@ function App(){
      case "Projects":
        return <ProjectsPage projects={projects} projectId={projectId} onSelect={setProjectId} onCreate={openCreateProject} onRename={openRenameProject} onArchive={confirmArchive}/>;
      case "API Keys":
-       return <ApiKeysPage projects={projects} projectId={projectId} keys={keys} onProjectChange={setProjectId} onCreate={openCreateKey} onEdit={openEditKey} onRotate={confirmRotate} onRevoke={confirmRevoke}/>;
+       return <ApiKeysPage projects={projects} projectId={projectId} keys={keys} models={catalogModels} onProjectChange={setProjectId} onCreate={openCreateKey} onEdit={openEditKey} onRotate={confirmRotate} onRevoke={confirmRevoke}/>;
      case "Models":
        return <ModelsPage apiKey={key} onApiKeyChange={setKey} onUseModel={modelId=>{setModel(modelId);navigate("Playground")}}/>;
      case "Playground":
@@ -288,16 +290,14 @@ function App(){
      </form>
    </Dialog>}
 
-   {keyDialog&&<Dialog title={keyDialog.mode==="create"?"Create API key":"Edit API key"} onClose={()=>setKeyDialog(null)}>
-     <form className="dialog-form" onSubmit={submitKey}>
-       <label>Key name<input autoFocus value={keyName} onChange={event=>setKeyName(event.target.value)} maxLength={120} required/></label>
-       {keyDialog.mode==="edit"&&<div className="form-grid">
-         <label>Requests / minute<input type="number" min="1" value={rpm} onChange={event=>setRpm(event.target.value)} placeholder="Default"/></label>
-         <label>Requests / day<input type="number" min="1" value={daily} onChange={event=>setDaily(event.target.value)} placeholder="Default"/></label>
-         <label>Max concurrent<input type="number" min="1" value={concurrent} onChange={event=>setConcurrent(event.target.value)} placeholder="Default"/></label>
-       </div>}
-       <div className="dialog-actions"><button type="button" onClick={()=>setKeyDialog(null)}>Cancel</button><button className="primary" disabled={busy} type="submit">{busy?"Saving…":"Save"}</button></div>
-     </form>
+   {keyDialog&&<Dialog title={keyDialog.mode==="create"?"Create API key":"API key policy"} onClose={()=>setKeyDialog(null)} wide>
+     <ApiKeyPolicyForm
+       apiKey={keyDialog.apiKey}
+       models={catalogModels}
+       busy={busy}
+       onCancel={()=>setKeyDialog(null)}
+       onSave={saveKeyPolicy}
+     />
    </Dialog>}
 
    {secretDialog&&<Dialog title={secretDialog.label} onClose={()=>setSecretDialog(null)}>
