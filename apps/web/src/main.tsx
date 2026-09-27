@@ -29,7 +29,7 @@ function App(){
  }
 
  useEffect(()=>{
-   api.me().then(setUser).catch(()=>setUser(null));
+   api.me().catch(()=>api.refresh()).then(setUser).catch(()=>setUser(null));
  },[]);
 
  useEffect(()=>{if(user)loadProjects()},[user]);
