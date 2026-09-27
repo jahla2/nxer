@@ -13,6 +13,7 @@ var modelCatalog = NewModelCatalog()
 var apiKeyAuthenticator *APIKeyAuthenticator
 var admissionController *AdmissionController
 var openRouterProvider *OpenRouterProvider
+var idempotencyGuard *IdempotencyGuard
 
 func main() {
 	var err error
@@ -22,6 +23,7 @@ func main() {
 	admissionController, err = NewAdmissionController(getenv("REDIS_URL", ""))
 	if err != nil { log.Fatalf("gateway admission configuration invalid: %v", err) }
 	defer admissionController.Close()
+	idempotencyGuard = NewIdempotencyGuard(admissionController.RedisClient())
 	openRouterProvider, err = NewOpenRouterProvider(getenv("UPSTREAM_BASE_URL","https://openrouter.ai/api/v1"),getenv("OPENROUTER_API_KEY",""))
 	if err != nil { log.Fatalf("gateway provider configuration invalid: %v",err) }
 	if err := openRouterProvider.SyncFreeModels(context.Background(),modelCatalog); err != nil { log.Fatalf("initial free-model catalog sync failed: %v",err) }
@@ -60,6 +62,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	if _, ok := modelCatalog.Get(req.Model); !ok { writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
 	principal, ok := r.Context().Value(apiKeyContextKey{}).(*APIKeyPrincipal)
 	if !ok { writeAPIError(w,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
+	if idemErr:=idempotencyGuard.Begin(r,principal,req); idemErr!=nil { writeAPIError(w,idemErr); return }
 	lease, admissionErr := admissionController.Admit(r.Context(), principal)
 	if admissionErr != nil { writeAPIError(w, admissionErr); return }
 	defer lease.Release(context.WithoutCancel(r.Context()))
