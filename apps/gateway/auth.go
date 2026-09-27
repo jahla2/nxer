@@ -363,13 +363,24 @@ func authMiddleware(authenticator *APIKeyAuthenticator, next http.Handler) http.
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rawKey := extractBearerToken(r)
 		if rawKey == "" {
-			writeAPIError(w, newAPIError(http.StatusUnauthorized, "authentication_error", "NEXORA_INVALID_API_KEY", "A valid Nexora API key is required."))
+			writeRequestAPIError(w, r, newAPIError(http.StatusUnauthorized, "authentication_error", "NEXORA_INVALID_API_KEY", "A valid Nexora API key is required."))
 			return
 		}
 		principal, err := authenticator.Authenticate(r.Context(), rawKey)
 		if err != nil {
-			writeAPIError(w, newAPIError(http.StatusUnauthorized, "authentication_error", "NEXORA_INVALID_API_KEY", "A valid Nexora API key is required."))
+			writeRequestAPIError(w, r, newAPIError(http.StatusUnauthorized, "authentication_error", "NEXORA_INVALID_API_KEY", "A valid Nexora API key is required."))
 			return
+		}
+		if trace := requestTraceFromContext(r.Context()); trace != nil {
+			trace.APIKeyID = principal.ID
+			trace.ProjectID = principal.ProjectID
+		}
+		if usageRecorder != nil && !usageRecorder.TouchLastUsed(principal.ID) {
+			gatewayLogger.Warn(
+				"last-used queue full",
+				"event", "last_used_enqueue_dropped",
+				"api_key_id", principal.ID,
+			)
 		}
 		ctx := context.WithValue(r.Context(), apiKeyContextKey{}, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
