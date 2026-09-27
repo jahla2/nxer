@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -449,11 +450,11 @@ func (p *OpenRouterProvider) doChatAttempt(
 	payload []byte,
 	stream bool,
 ) (*http.Response, bool, error) {
-	wroteRequest := false
+	var wroteRequest atomic.Bool
 	trace := &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			if info.Err == nil {
-				wroteRequest = true
+				wroteRequest.Store(true)
 			}
 		},
 	}
@@ -473,7 +474,7 @@ func (p *OpenRouterProvider) doChatAttempt(
 	}
 
 	resp, err := p.client.Do(upReq)
-	return resp, wroteRequest, err
+	return resp, wroteRequest.Load(), err
 }
 
 func logProviderRetry(
