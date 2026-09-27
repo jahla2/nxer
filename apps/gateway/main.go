@@ -89,11 +89,54 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	if !ok { writeAPIError(w,newAPIError(http.StatusUnauthorized,"authentication_error","NEXORA_INVALID_API_KEY","A valid Nexora API key is required.")); return }
 	if _, ok := modelCatalog.Get(req.Model); !ok { writeAPIError(w,newAPIError(http.StatusServiceUnavailable,"service_unavailable","NEXORA_MODEL_UNAVAILABLE","Requested model is not available.")); return }
 	if !principal.AllowsModel(req.Model) { writeAPIError(w,newAPIError(http.StatusForbidden,"permission_error","NEXORA_MODEL_NOT_ALLOWED","This API key is not permitted to use the requested model.")); return }
-	if idemErr:=idempotencyGuard.Begin(r,principal,req); idemErr!=nil { writeAPIError(w,idemErr); return }
+
+	idemDecision, idemErr := idempotencyGuard.Begin(r,principal,req)
+	if idemErr!=nil { writeAPIError(w,idemErr); return }
+	if idemDecision.Replay!=nil { writeCachedIdempotentResponse(w,idemDecision.Replay); return }
+	reservation:=idemDecision.Reservation
+
 	lease, admissionErr := admissionController.Admit(r.Context(), principal)
-	if admissionErr != nil { writeAPIError(w, admissionErr); return }
+	if admissionErr != nil {
+		if reservation!=nil { reservation.Fail(context.WithoutCancel(r.Context())) }
+		writeAPIError(w, admissionErr)
+		return
+	}
 	defer lease.Release(context.WithoutCancel(r.Context()))
-	if providerErr:=openRouterProvider.Chat(r.Context(),req,w); providerErr!=nil { writeAPIError(w,providerErr); return }
+
+	if req.Stream {
+		if providerErr:=openRouterProvider.Chat(r.Context(),req,w); providerErr!=nil {
+			if reservation!=nil { reservation.Fail(context.WithoutCancel(r.Context())) }
+			writeAPIError(w,providerErr)
+			return
+		}
+		if reservation!=nil {
+			if finalizeErr:=reservation.CompleteStream(context.WithoutCancel(r.Context())); finalizeErr!=nil {
+				log.Printf("idempotency stream finalization failed code=%s",finalizeErr.Code)
+			}
+		}
+		return
+	}
+
+	if reservation==nil {
+		if providerErr:=openRouterProvider.Chat(r.Context(),req,w); providerErr!=nil { writeAPIError(w,providerErr); return }
+		return
+	}
+
+	buffered:=NewBufferedResponseWriter()
+	if providerErr:=openRouterProvider.Chat(r.Context(),req,buffered); providerErr!=nil {
+		reservation.Fail(context.WithoutCancel(r.Context()))
+		writeAPIError(w,providerErr)
+		return
+	}
+	if finalizeErr:=reservation.Complete(
+		context.WithoutCancel(r.Context()),
+		buffered.Status(),
+		buffered.Header().Get("Content-Type"),
+		buffered.Body(),
+	); finalizeErr!=nil {
+		log.Printf("idempotency response finalization failed code=%s",finalizeErr.Code)
+	}
+	buffered.FlushTo(w)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
