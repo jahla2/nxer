@@ -559,22 +559,39 @@ def request_password_reset(
             )
             user = cursor.fetchone()
             if user is not None:
-                raw_token = generate_session_token("nxa_pr")
-                cursor.execute(
-                    "UPDATE password_reset_tokens SET used_at=now() WHERE user_id=%s AND used_at IS NULL",
-                    (user["id"],),
-                )
                 cursor.execute(
                     """
-                    INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
-                    VALUES (%s,%s,%s)
+                    SELECT created_at
+                    FROM password_reset_tokens
+                    WHERE user_id=%s
+                    ORDER BY created_at DESC
+                    LIMIT 1
                     """,
-                    (
-                        user["id"],
-                        hash_session_token(raw_token, settings.session_secret),
-                        datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_ttl_minutes),
-                    ),
+                    (user["id"],),
                 )
+                latest = cursor.fetchone()
+                cooldown_cutoff = datetime.now(timezone.utc) - timedelta(
+                    seconds=settings.password_reset_request_cooldown_seconds
+                )
+                can_issue = latest is None or latest["created_at"] <= cooldown_cutoff
+
+                if can_issue:
+                    raw_token = generate_session_token("nxa_pr")
+                    cursor.execute(
+                        "UPDATE password_reset_tokens SET used_at=now() WHERE user_id=%s AND used_at IS NULL",
+                        (user["id"],),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO password_reset_tokens (user_id, token_hash, expires_at)
+                        VALUES (%s,%s,%s)
+                        """,
+                        (
+                            user["id"],
+                            hash_session_token(raw_token, settings.session_secret),
+                            datetime.now(timezone.utc) + timedelta(minutes=settings.password_reset_ttl_minutes),
+                        ),
+                    )
         connection.commit()
 
     if raw_token and user is not None and settings.smtp_configured:
