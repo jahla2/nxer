@@ -1,9 +1,8 @@
 import React,{useEffect,useMemo,useState} from "react";
 import {createRoot} from "react-dom/client";
 import {api,Project,ApiKey,User} from "./api";
+import {AppShell,ConsoleModule} from "./components/AppShell";
 import "./styles.css";
-
-const modules=["Overview","Projects","API Keys","Models","Playground","Usage","Requests","Settings","Status"];
 
 function Dialog({title,children,onClose}:{title:string;children:React.ReactNode;onClose:()=>void}){
  return <div className="dialog-backdrop" role="presentation" onMouseDown={e=>{if(e.currentTarget===e.target)onClose()}}>
@@ -18,7 +17,7 @@ function App(){
  const [user,setUser]=useState<User|null|undefined>(undefined);
  const [authMode,setAuthMode]=useState<"login"|"register">("login");
  const [email,setEmail]=useState(""),[password,setPassword]=useState(""),[displayName,setDisplayName]=useState("");
- const [active,setActive]=useState("Overview"),[key,setKey]=useState(""),[projects,setProjects]=useState<Project[]>([]);
+ const [active,setActive]=useState<ConsoleModule>("Overview"),[key,setKey]=useState(""),[projects,setProjects]=useState<Project[]>([]);
  const [projectId,setProjectId]=useState(""),[keys,setKeys]=useState<ApiKey[]>([]),[data,setData]=useState<any>(null),[error,setError]=useState("");
  const [chatPrompt,setChatPrompt]=useState("Say hello from Nexora"),[model,setModel]=useState("auto-free"),[busy,setBusy]=useState(false);
 
@@ -198,17 +197,18 @@ function App(){
    </main>;
  }
 
- return <main className="shell">
-   <header>
-     <div><p className="eyebrow">NEXORA AI</p><h1>Developer Console</h1><p className="subtitle">Manage projects, API credentials and free-model access.</p></div>
-     <div className="user-summary"><div><strong>{user.display_name}</strong><small>{user.email}</small></div><button onClick={logout}>Logout</button></div>
-   </header>
-
-   <nav>{modules.map(x=><button key={x} className={active===x?"active":""} onClick={()=>{setActive(x);setData(null);setError("")}}>{x}</button>)}</nav>
-
+ return <AppShell
+   user={user}
+   active={active}
+   onNavigate={module=>{setActive(module);setData(null);setError("")}}
+   projects={projects}
+   projectId={projectId}
+   onProjectChange={setProjectId}
+   onLogout={logout}
+ >
    {error&&<p className="error global-error">{error}</p>}
 
-   <section className="panel"><h2>{active}</h2>
+   <section className="panel page-panel">
      {active==="Overview"&&<div className="overview-grid">
        <div className="stat-card"><span>Signed in</span><strong>{user.display_name}</strong></div>
        <div className="stat-card"><span>Projects</span><strong>{projects.filter(p=>p.status==="active").length}</strong></div>
@@ -297,7 +297,7 @@ function App(){
      <p>{confirmDialog.message}</p>
      <div className="dialog-actions"><button onClick={()=>setConfirmDialog(null)}>Cancel</button><button className="danger" disabled={busy} onClick={runConfirmedAction}>Confirm</button></div>
    </Dialog>}
- </main>;
+ </AppShell>;
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><App/></React.StrictMode>);
