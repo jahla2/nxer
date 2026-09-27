@@ -303,6 +303,7 @@ func (p *OpenRouterProvider) streamResponse(
 	metrics := &ProviderMetrics{Status: http.StatusOK}
 	reader := bufio.NewReaderSize(resp.Body, 32*1024)
 	firstDataSeen := false
+	sawDone := false
 	publicCompletionID := newCompletionID()
 
 	for {
@@ -330,6 +331,9 @@ func (p *OpenRouterProvider) streamResponse(
 				return metrics, nil
 			}
 
+			if dataLine && isDoneSSELine(sanitized) {
+				sawDone = true
+			}
 			if dataLine && !firstDataSeen && !isDoneSSELine(sanitized) {
 				firstDataSeen = true
 				metrics.TTFTMS = durationMillisPtr(time.Since(start))
@@ -349,7 +353,10 @@ func (p *OpenRouterProvider) streamResponse(
 		if err != nil {
 			metrics.LatencyMS = durationMillisPtr(time.Since(start))
 			if errors.Is(err, io.EOF) {
-				metrics.Completed = true
+				metrics.Completed = sawDone
+				if !sawDone {
+					metrics.Status = http.StatusBadGateway
+				}
 				return metrics, nil
 			}
 			metrics.Status = http.StatusBadGateway
