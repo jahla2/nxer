@@ -9,6 +9,11 @@ from nexora_control.audit import write_audit
 from nexora_control.auth import UserPrincipal, get_current_user, require_csrf
 from nexora_control.config import Settings, get_settings
 from nexora_control.database import get_connection
+from nexora_control.gateway_cache import (
+    GatewayAuthCacheError,
+    invalidate_api_key_prefixes,
+    invalidate_api_key_prefixes_best_effort,
+)
 from nexora_control.security import generate_api_key, hash_api_key, key_prefix
 
 
