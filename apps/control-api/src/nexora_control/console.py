@@ -190,8 +190,9 @@ def requests(current_user: UserPrincipal = Depends(get_current_user)) -> list[di
     with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT ue.request_id, ue.api_key_id, ue.model_id, ue.status, ue.ttft_ms,
-                   ue.latency_ms, ue.prompt_tokens, ue.completion_tokens, ue.created_at
+            SELECT ue.request_id, ue.api_key_id, ue.model_id, ue.public_model_id,
+                   ue.status, ue.ttft_ms, ue.latency_ms, ue.prompt_tokens,
+                   ue.completion_tokens, ue.error_class, ue.created_at
             FROM usage_events ue
             JOIN api_keys k ON k.id = ue.api_key_id
             JOIN projects p ON p.id = k.project_id
