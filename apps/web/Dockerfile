@@ -17,3 +17,4 @@ COPY --from=build --chown=nginx:nginx /app/dist /usr/share/nginx/html
 
 USER nginx
 EXPOSE 8080
+ENTRYPOINT ["nginx", "-g", "daemon off;"]
