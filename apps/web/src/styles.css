@@ -798,3 +798,305 @@ input::placeholder,textarea::placeholder{color:#98a2b3}
   .admin-jobs-table,.admin-audit-table{min-width:0}
   .table-error,.table-summary{max-width:100%}
 }
+
+
+/* Phase 6 UX completion: routing, docs, notifications, errors, accessibility */
+body.modal-open{overflow:hidden}
+.skip-link{
+  position:fixed;
+  top:10px;
+  left:10px;
+  z-index:300;
+  transform:translateY(-160%);
+  padding:9px 12px;
+  border-radius:8px;
+  background:#111827;
+  color:#fff;
+  font-size:12px;
+  font-weight:750;
+  text-decoration:none;
+  box-shadow:var(--shadow-md);
+  transition:transform .14s ease;
+}
+.skip-link:focus{transform:translateY(0)}
+.page-heading h1:focus{outline:none}
+.auth-shell{background:var(--bg)}
+
+.toast-region{
+  position:fixed;
+  top:18px;
+  right:18px;
+  z-index:220;
+  width:min(380px,calc(100vw - 36px));
+  display:grid;
+  gap:9px;
+  pointer-events:none;
+}
+.toast{
+  pointer-events:auto;
+  display:grid;
+  grid-template-columns:28px minmax(0,1fr) auto;
+  align-items:start;
+  gap:10px;
+  padding:12px 12px 12px 11px;
+  border:1px solid var(--border);
+  border-radius:11px;
+  background:rgba(255,255,255,.98);
+  box-shadow:0 18px 44px rgba(15,23,42,.16);
+  animation:toast-in .18s ease-out;
+}
+.toast-success{border-color:#ccebdc}
+.toast-error{border-color:#f4c7c3}
+.toast-info{border-color:#d8e4fb}
+.toast-icon{
+  width:26px;
+  height:26px;
+  display:grid;
+  place-items:center;
+  border-radius:8px;
+  background:#eef2f7;
+  color:#475467;
+  font-size:11px;
+  font-weight:900;
+}
+.toast-success .toast-icon{background:var(--success-soft);color:var(--success)}
+.toast-error .toast-icon{background:var(--danger-soft);color:var(--danger)}
+.toast-info .toast-icon{background:var(--primary-soft);color:var(--primary)}
+.toast-copy{display:grid;gap:3px;min-width:0}
+.toast-copy strong{font-size:11px;color:#344054}
+.toast-copy p{margin:0;font-size:10px;line-height:1.45;color:var(--text-soft);word-break:break-word}
+.toast-close{
+  border:0;
+  background:transparent;
+  color:#98a2b3;
+  padding:2px 4px;
+  font-size:17px;
+  line-height:1;
+}
+@keyframes toast-in{
+  from{opacity:0;transform:translateY(-6px) scale(.98)}
+  to{opacity:1;transform:translateY(0) scale(1)}
+}
+
+.fatal-error-shell{
+  min-height:100vh;
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:var(--bg);
+}
+.fatal-error-card{
+  width:min(100%,520px);
+  padding:28px;
+  border:1px solid var(--border);
+  border-radius:16px;
+  background:#fff;
+  box-shadow:var(--shadow-md);
+  text-align:center;
+}
+.fatal-error-mark{
+  width:44px;
+  height:44px;
+  margin:0 auto 16px;
+  display:grid;
+  place-items:center;
+  border-radius:12px;
+  background:var(--danger-soft);
+  color:var(--danger);
+  font-size:18px;
+  font-weight:900;
+}
+.fatal-error-card h1{font-size:22px;margin:5px 0 8px}
+.fatal-error-card>p:last-of-type{font-size:12px;line-height:1.6;color:var(--text-soft)}
+.fatal-error-actions{display:flex;justify-content:center;gap:8px;margin-top:20px}
+
+/* Documentation */
+.docs-layout{
+  display:grid;
+  grid-template-columns:180px minmax(0,1fr);
+  gap:24px;
+  align-items:start;
+}
+.docs-toc{
+  position:sticky;
+  top:104px;
+  display:grid;
+  gap:3px;
+  padding:13px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:#fff;
+  box-shadow:var(--shadow-sm);
+}
+.docs-toc strong{
+  padding:4px 7px 8px;
+  color:#344054;
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+}
+.docs-toc a{
+  padding:7px;
+  border-radius:7px;
+  color:#667085;
+  font-size:10px;
+  font-weight:650;
+  text-decoration:none;
+}
+.docs-toc a:hover,.docs-toc a:focus-visible{background:#f5f7fa;color:#344054}
+.docs-content{display:grid;gap:14px;min-width:0}
+.docs-hero,.docs-section{
+  scroll-margin-top:100px;
+  padding:22px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:#fff;
+  box-shadow:var(--shadow-sm);
+}
+.docs-hero h2{font-size:22px;letter-spacing:-.025em;margin:5px 0 9px}
+.docs-hero>p{
+  max-width:720px;
+  margin:0;
+  color:var(--text-soft);
+  font-size:12px;
+  line-height:1.65;
+}
+.docs-hero code,.docs-section code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.docs-base-url{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:18px;
+  padding:11px 12px;
+  border:1px solid #dce6f5;
+  border-radius:9px;
+  background:#f8fbff;
+}
+.docs-base-url span{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#718096;font-weight:800}
+.docs-base-url code{font-size:11px;color:#274f9a;word-break:break-all}
+.docs-section-head{
+  display:grid;
+  grid-template-columns:34px minmax(0,1fr);
+  gap:12px;
+  align-items:start;
+  margin-bottom:16px;
+}
+.docs-step{
+  width:32px;
+  height:32px;
+  display:grid;
+  place-items:center;
+  border-radius:9px;
+  background:#f0f4fa;
+  color:#526174;
+  font-size:9px;
+  font-weight:850;
+}
+.docs-section-head h2{font-size:16px;letter-spacing:-.015em;margin:1px 0 5px}
+.docs-section-head p{margin:0;color:var(--text-soft);font-size:11px;line-height:1.55}
+.docs-code{
+  overflow:hidden;
+  border:1px solid #202b3c;
+  border-radius:11px;
+  background:#111827;
+}
+.docs-code-head{
+  min-height:38px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:7px 9px 7px 13px;
+  border-bottom:1px solid rgba(255,255,255,.08);
+  background:#162033;
+}
+.docs-code-head span{font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:#91a0b6;font-weight:750}
+.docs-code-head button{
+  border-color:rgba(255,255,255,.12);
+  background:rgba(255,255,255,.05);
+  color:#cbd5e1;
+  padding:5px 8px;
+  font-size:9px;
+}
+.docs-code-head button:hover:not(:disabled){background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.2)}
+.docs-code pre{
+  margin:0;
+  padding:15px;
+  overflow:auto;
+  color:#d7e2f0;
+  font-size:10px;
+  line-height:1.65;
+  tab-size:2;
+}
+.docs-example-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.endpoint-card{
+  display:grid;
+  grid-template-columns:auto auto minmax(0,1fr);
+  align-items:center;
+  gap:9px;
+  padding:11px;
+  border:1px solid var(--border);
+  border-radius:10px;
+  background:#fbfcfe;
+}
+.endpoint-card>code{font-size:11px;color:#344054;font-weight:700}
+.endpoint-card p{margin:0;text-align:right;font-size:10px;color:var(--text-faint)}
+.http-method{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-width:38px;
+  padding:4px 6px;
+  border-radius:6px;
+  font-size:9px;
+  font-weight:850;
+}
+.http-method.get{background:#ecfdf5;color:#047857}
+.docs-note{
+  margin-top:10px;
+  padding:12px;
+  border:1px solid #dce6f5;
+  border-radius:9px;
+  background:#f8fbff;
+}
+.docs-note strong{font-size:10px;color:#344054}
+.docs-note p{margin:4px 0 0;font-size:10px;line-height:1.55;color:var(--text-soft)}
+.docs-error-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.docs-error-row{
+  display:grid;
+  grid-template-columns:42px minmax(0,1fr);
+  gap:9px;
+  align-items:center;
+  padding:9px 10px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:#fbfcfe;
+}
+.docs-error-row code{font-size:10px;font-weight:850;color:#344054}
+.docs-error-row span{font-size:10px;color:var(--text-soft)}
+
+@media(max-width:900px){
+  .docs-layout{grid-template-columns:1fr}
+  .docs-toc{
+    position:static;
+    display:flex;
+    gap:4px;
+    overflow-x:auto;
+    padding:8px;
+  }
+  .docs-toc strong{display:none}
+  .docs-toc a{white-space:nowrap}
+  .docs-example-grid{grid-template-columns:1fr}
+}
+@media(max-width:620px){
+  .toast-region{top:12px;right:12px;width:calc(100vw - 24px)}
+  .toast{grid-template-columns:26px minmax(0,1fr) auto}
+  .fatal-error-actions{display:grid;grid-template-columns:1fr}
+  .docs-hero,.docs-section{padding:16px}
+  .docs-base-url{align-items:flex-start;flex-direction:column}
+  .endpoint-card{grid-template-columns:auto minmax(0,1fr)}
+  .endpoint-card p{grid-column:1/-1;text-align:left}
+  .docs-error-grid{grid-template-columns:1fr}
+  .docs-section-head{grid-template-columns:28px minmax(0,1fr)}
+  .docs-step{width:27px;height:27px}
+}
