@@ -181,3 +181,120 @@ jobs:
       - uses: actions/checkout@v4
       - run: cp .env.example .env
       - run: docker compose -f infra/docker-compose.yml config
+
+
+  production-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare production smoke environment
+        run: |
+          cp .env.production.example .env.production
+          sed -i 's/CHANGE_ME_PROVIDER_KEY/test-provider-key/g' .env.production
+          sed -i 's/CHANGE_ME_DATABASE_PASSWORD/test-database-password-123456/g' .env.production
+          sed -i 's/CHANGE_ME_REDIS_PASSWORD/test-redis-password-123456789/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_API_KEY_PEPPER/test-api-key-pepper-that-is-longer-than-thirty-two-characters/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_SESSION_SECRET/test-session-secret-that-is-longer-than-thirty-two-characters/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_ADMIN_TOKEN/test-admin-token-that-is-longer-than-twenty-four/g' .env.production
+          sed -i 's/CHANGE_ME_SMTP_USERNAME/test-smtp-user/g' .env.production
+          sed -i 's/CHANGE_ME_SMTP_PASSWORD/test-smtp-password/g' .env.production
+          sed -i 's#https://openrouter.ai/api/v1#https://127.0.0.1:9#' .env.production
+      - name: Validate production Compose
+        run: docker compose -f infra/docker-compose.prod.yml config >/dev/null
+      - name: Build immutable production images
+        run: docker compose -f infra/docker-compose.prod.yml build migrate control-fastapi gateway-go celery-worker web-react nginx
+      - name: Start production stack
+        run: docker compose -f infra/docker-compose.prod.yml up -d
+      - name: Wait for hardened edge
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/edge-health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f infra/docker-compose.prod.yml ps
+          docker compose -f infra/docker-compose.prod.yml logs --no-color
+          exit 1
+      - name: Verify production routes and SPA deep links
+        run: |
+          curl -fsS http://127.0.0.1:8080/edge-health | grep '"status":"ok"'
+          curl -fsS http://127.0.0.1:8080/health | grep '"status":"ok"'
+          curl -fsS http://127.0.0.1:8080/ready | grep '"status":"ok"'
+          curl -fsS http://127.0.0.1:8080/api/health | grep '"status":"ok"'
+          curl -fsS http://127.0.0.1:8080/api/ready | grep '"status":"ok"'
+          curl -fsS http://127.0.0.1:8080/docs | grep '<div id="root"></div>'
+          curl -fsS http://127.0.0.1:8080/reset-password?token=test | grep '<div id="root"></div>'
+      - name: Verify edge security headers
+        run: |
+          headers="$(mktemp)"
+          curl -fsSI http://127.0.0.1:8080/ > "$headers"
+          grep -qi '^content-security-policy:' "$headers"
+          grep -qi '^strict-transport-security:' "$headers"
+          grep -qi '^x-content-type-options: nosniff' "$headers"
+          grep -qi '^x-frame-options: DENY' "$headers"
+          grep -qi '^referrer-policy: no-referrer' "$headers"
+      - name: Verify application images run non-root
+        run: |
+          test "$(docker image inspect nexora-gateway:0.1.0-alpha --format '{{.Config.User}}')" = "nexora"
+          test "$(docker image inspect nexora-control:0.1.0-alpha --format '{{.Config.User}}')" = "nexora"
+          test "$(docker image inspect nexora-worker:0.1.0-alpha --format '{{.Config.User}}')" = "nexora"
+          test "$(docker image inspect nexora-web:0.1.0-alpha --format '{{.Config.User}}')" = "nginx"
+          test "$(docker image inspect nexora-edge:0.1.0-alpha --format '{{.Config.User}}')" = "nginx"
+      - name: Verify no source bind mounts in production app services
+        run: |
+          for service in gateway-go control-fastapi celery-worker celery-beat web-react nginx; do
+            id="$(docker compose -f infra/docker-compose.prod.yml ps -q "$service")"
+            test -n "$id"
+            test "$(docker inspect "$id" --format '{{range .Mounts}}{{if eq .Type "bind"}}bind{{end}}{{end}}')" = ""
+          done
+      - name: Production stack diagnostics
+        if: always()
+        run: docker compose -f infra/docker-compose.prod.yml ps
+      - name: Stop production stack
+        if: always()
+        run: docker compose -f infra/docker-compose.prod.yml down -v --remove-orphans
+
+  backup-restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare production recovery environment
+        run: |
+          cp .env.production.example .env.production
+          sed -i 's/CHANGE_ME_PROVIDER_KEY/test-provider-key/g' .env.production
+          sed -i 's/CHANGE_ME_DATABASE_PASSWORD/test-database-password-123456/g' .env.production
+          sed -i 's/CHANGE_ME_REDIS_PASSWORD/test-redis-password-123456789/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_API_KEY_PEPPER/test-api-key-pepper-that-is-longer-than-thirty-two-characters/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_SESSION_SECRET/test-session-secret-that-is-longer-than-thirty-two-characters/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_ADMIN_TOKEN/test-admin-token-that-is-longer-than-twenty-four/g' .env.production
+          sed -i 's/CHANGE_ME_SMTP_USERNAME/test-smtp-user/g' .env.production
+          sed -i 's/CHANGE_ME_SMTP_PASSWORD/test-smtp-password/g' .env.production
+      - name: Start database and run migrations
+        run: |
+          docker compose -f infra/docker-compose.prod.yml build migrate
+          docker compose -f infra/docker-compose.prod.yml up -d postgres
+          docker compose -f infra/docker-compose.prod.yml run --rm validate-config
+          docker compose -f infra/docker-compose.prod.yml run --rm migrate
+      - name: Seed restore probe
+        run: |
+          docker compose -f infra/docker-compose.prod.yml exec -T postgres             psql -U nexora -d nexora -v ON_ERROR_STOP=1             -c "CREATE TABLE release_restore_probe(id integer PRIMARY KEY, value text NOT NULL);"             -c "INSERT INTO release_restore_probe VALUES (1, 'backup-ok');"
+      - name: Create verified backup
+        run: |
+          docker compose -f infra/docker-compose.prod.yml --profile ops run --rm backup | tee /tmp/backup.out
+          grep -E '/backups/nexora_[0-9]{8}T[0-9]{6}Z_.*\.dump$' /tmp/backup.out | tail -1 > /tmp/backup.path
+          test -s /tmp/backup.path
+      - name: Restore into clean database
+        run: |
+          docker compose -f infra/docker-compose.prod.yml exec -T postgres createdb -U nexora nexora_restore
+          BACKUP_FILE="$(cat /tmp/backup.path)"           RESTORE_DATABASE_URL="postgresql://nexora:test-database-password-123456@postgres:5432/nexora_restore"           ALLOW_DESTRUCTIVE_RESTORE=yes             docker compose -f infra/docker-compose.prod.yml --profile restore run --rm restore
+      - name: Verify restored schema and data
+        run: |
+          test "$(docker compose -f infra/docker-compose.prod.yml exec -T postgres psql -U nexora -d nexora_restore -Atqc 'SELECT count(*) FROM schema_migrations')" = "9"
+          test "$(docker compose -f infra/docker-compose.prod.yml exec -T postgres psql -U nexora -d nexora_restore -Atqc "SELECT value FROM release_restore_probe WHERE id=1")" = "backup-ok"
+      - name: Recovery diagnostics
+        if: always()
+        run: docker compose -f infra/docker-compose.prod.yml ps
+      - name: Stop recovery stack
+        if: always()
+        run: docker compose -f infra/docker-compose.prod.yml down -v --remove-orphans
