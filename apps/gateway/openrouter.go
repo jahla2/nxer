@@ -274,6 +274,9 @@ func (p *OpenRouterProvider) Chat(
 		)
 
 		if requestErr != nil {
+			if resp != nil {
+				drainAndClose(resp.Body)
+			}
 			if errors.Is(ctx.Err(), context.Canceled) || errors.Is(requestErr, context.Canceled) {
 				permit.Neutral()
 				return metricsFromStart(start, 499, false), nil
@@ -301,8 +304,20 @@ func (p *OpenRouterProvider) Chat(
 			if canRetry {
 				delay := policy.Backoff(attempt, "")
 				logProviderRetry(ctx, p.Key(), attempt, policy.MaxAttempts, delay, "transport_error")
-				if err := sleepWithContext(requestCtx, delay); err == nil {
+				if sleepErr := sleepWithContext(requestCtx, delay); sleepErr == nil {
 					continue
+				} else if errors.Is(ctx.Err(), context.Canceled) {
+					permit.Neutral()
+					return metricsFromStart(start, 499, false), nil
+				} else if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+					permit.Failure()
+					timeoutErr := newAPIError(
+						http.StatusGatewayTimeout,
+						"upstream_error",
+						"NEXORA_UPSTREAM_TIMEOUT",
+						"Upstream provider timed out.",
+					)
+					return metricsFromStart(start, http.StatusGatewayTimeout, false), timeoutErr
 				}
 			}
 
@@ -329,8 +344,20 @@ func (p *OpenRouterProvider) Chat(
 					delay,
 					"status_"+strconv.Itoa(statusCode),
 				)
-				if err := sleepWithContext(requestCtx, delay); err == nil {
+				if sleepErr := sleepWithContext(requestCtx, delay); sleepErr == nil {
 					continue
+				} else if errors.Is(ctx.Err(), context.Canceled) {
+					permit.Neutral()
+					return metricsFromStart(start, 499, false), nil
+				} else if errors.Is(requestCtx.Err(), context.DeadlineExceeded) {
+					permit.Failure()
+					timeoutErr := newAPIError(
+						http.StatusGatewayTimeout,
+						"upstream_error",
+						"NEXORA_UPSTREAM_TIMEOUT",
+						"Upstream provider timed out.",
+					)
+					return metricsFromStart(start, http.StatusGatewayTimeout, false), timeoutErr
 				}
 			}
 
