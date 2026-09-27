@@ -720,3 +720,49 @@ func TestChatRetriesTransportFailureOnlyBeforeRequestWasWritten(t *testing.T) {
 		}
 	})
 }
+
+
+func TestChatStreamingTimeoutBeforeFirstFrameReturnsStructuredTimeout(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(150 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+		retryPolicy: RetryPolicy{
+			MaxAttempts: 1,
+		},
+		breaker:       NewCircuitBreaker(5, time.Second),
+		streamTimeout: 40 * time.Millisecond,
+	}
+	route := Model{
+		ID:          "nexora/stream-timeout",
+		UpstreamID:  "vendor/stream-timeout",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+	rec := httptest.NewRecorder()
+
+	metrics, apiErr := provider.Chat(context.Background(), req, route, rec)
+	if apiErr == nil || apiErr.Code != "NEXORA_UPSTREAM_TIMEOUT" || apiErr.Status != http.StatusGatewayTimeout {
+		t.Fatalf("expected structured timeout before first frame, metrics=%#v error=%#v", metrics, apiErr)
+	}
+	if metrics == nil || metrics.Status != http.StatusGatewayTimeout || metrics.Completed {
+		t.Fatalf("unexpected timeout metrics %#v", metrics)
+	}
+	if rec.Code == http.StatusOK && rec.Body.Len() > 0 {
+		t.Fatalf("gateway must not expose a successful SSE body before first valid frame: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+}
