@@ -94,7 +94,7 @@ jobs:
       - run: sh infra/postgres/migrate.sh
       - name: Verify schema
         run: |
-          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "5"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "6"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT is_nullable FROM information_schema.columns WHERE table_name='usage_daily' AND column_name='model_id'")" = "YES"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_daily' AND indexname='ux_usage_daily_dimensions'")" = "1"
 
