@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
+	"database/sql"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -133,9 +132,8 @@ func (l *AdmissionLease) Release(ctx context.Context) {
 	_,_ = releaseScript.Run(ctx,l.controller.client,keys).Result()
 }
 
-func principalLimit(v interface{ Value() (int64,error) }, env string, fallback int) int {
-	value, err := v.Value()
-	if err==nil && value>0 { return int(value) }
+func principalLimit(v sql.NullInt64, env string, fallback int) int {
+	if v.Valid && v.Int64 > 0 { return int(v.Int64) }
 	return getenvInt(env,fallback)
 }
 
@@ -152,5 +150,3 @@ func admissionLimitError(code int64) *APIError {
 	}
 }
 
-var _ = errors.New
-var _ = strconv.Itoa
