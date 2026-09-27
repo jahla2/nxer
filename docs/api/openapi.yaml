@@ -25,6 +25,12 @@ paths:
     post:
       summary: Create an OpenAI-compatible chat completion
       security: [{bearerAuth: []}]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema: {type: string, maxLength: 128}
+          description: Prevents duplicate starts for repeated requests. Same key with a different body returns 409.
       requestBody:
         required: true
         content:
