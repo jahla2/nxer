@@ -21,6 +21,15 @@ type OpenRouterProvider struct {
 	client *http.Client
 }
 
+type ProviderMetrics struct {
+	Status int
+	TTFTMS *int
+	LatencyMS *int
+	PromptTokens *int
+	CompletionTokens *int
+	Completed bool
+}
+
 type upstreamModelsResponse struct {
 	Data []struct {
 		ID string `json:"id"`
@@ -81,54 +90,155 @@ func (p *OpenRouterProvider) SyncFreeModels(ctx context.Context,catalog *ModelCa
 	return nil
 }
 
-func (p *OpenRouterProvider) Chat(ctx context.Context,req *ChatCompletionRequest,w http.ResponseWriter)*APIError{
+func (p *OpenRouterProvider) Chat(ctx context.Context,req *ChatCompletionRequest,w http.ResponseWriter)(*ProviderMetrics,*APIError){
+	start:=time.Now()
 	upstreamReq:=*req
 	if upstreamReq.Model=="auto-free"{upstreamReq.Model="openrouter/free"}
 	payload,err:=json.Marshal(upstreamReq)
-	if err!=nil{return newAPIError(500,"server_error","NEXORA_INTERNAL_ERROR","Unable to encode request.")}
+	if err!=nil{return metricsFromStart(start,500,false),newAPIError(500,"server_error","NEXORA_INTERNAL_ERROR","Unable to encode request.")}
 	upReq,err:=p.newRequest(ctx,http.MethodPost,"/chat/completions",bytes.NewReader(payload))
-	if err!=nil{return newAPIError(502,"upstream_error","NEXORA_UPSTREAM_ERROR","Unable to create upstream request.")}
+	if err!=nil{return metricsFromStart(start,502,false),newAPIError(502,"upstream_error","NEXORA_UPSTREAM_ERROR","Unable to create upstream request.")}
 	if req.Stream{upReq.Header.Set("Accept","text/event-stream")}
 	resp,err:=p.client.Do(upReq)
 	if err!=nil{
-		if errors.Is(err,context.DeadlineExceeded){return newAPIError(504,"upstream_error","NEXORA_UPSTREAM_TIMEOUT","Upstream provider timed out.")}
-		return newAPIError(502,"upstream_error","NEXORA_UPSTREAM_ERROR","Upstream provider request failed.")
+		if errors.Is(err,context.DeadlineExceeded){return metricsFromStart(start,504,false),newAPIError(504,"upstream_error","NEXORA_UPSTREAM_TIMEOUT","Upstream provider timed out.")}
+		if errors.Is(err,context.Canceled){return metricsFromStart(start,499,false),nil}
+		return metricsFromStart(start,502,false),newAPIError(502,"upstream_error","NEXORA_UPSTREAM_ERROR","Upstream provider request failed.")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode<200||resp.StatusCode>=300{return mapUpstreamStatus(resp.StatusCode)}
-	if req.Stream{return p.streamResponse(ctx,resp,w)}
-	return p.jsonResponse(resp,w)
+	if resp.StatusCode<200||resp.StatusCode>=300{
+		apiErr:=mapUpstreamStatus(resp.StatusCode)
+		return metricsFromStart(start,apiErr.Status,false),apiErr
+	}
+	if req.Stream{return p.streamResponse(ctx,resp,w,start)}
+	return p.jsonResponse(resp,w,start)
 }
 
-func (p *OpenRouterProvider) jsonResponse(resp *http.Response,w http.ResponseWriter)*APIError{
-	body,err:=io.ReadAll(io.LimitReader(resp.Body,8<<20))
-	if err!=nil{return newAPIError(502,"upstream_error","NEXORA_UPSTREAM_ERROR","Unable to read upstream response.")}
+func (p *OpenRouterProvider) jsonResponse(resp *http.Response,w http.ResponseWriter,start time.Time)(*ProviderMetrics,*APIError){
+	firstRead:=time.Time{}
+	reader:=&firstReadRecorder{reader:resp.Body,onFirstRead:func(){firstRead=time.Now()}}
+	body,err:=io.ReadAll(io.LimitReader(reader,8<<20))
+	if err!=nil{return metricsFromStart(start,502,false),newAPIError(502,"upstream_error","NEXORA_UPSTREAM_ERROR","Unable to read upstream response.")}
 	var payload any
-	if err:=json.Unmarshal(body,&payload);err!=nil{return newAPIError(502,"upstream_error","NEXORA_UPSTREAM_INVALID_RESPONSE","Upstream provider returned an invalid response.")}
+	if err:=json.Unmarshal(body,&payload);err!=nil{return metricsFromStart(start,502,false),newAPIError(502,"upstream_error","NEXORA_UPSTREAM_INVALID_RESPONSE","Upstream provider returned an invalid response.")}
+	metrics:=metricsFromStart(start,200,true)
+	if !firstRead.IsZero(){metrics.TTFTMS=durationMillisPtr(firstRead.Sub(start))}
+	metrics.PromptTokens,metrics.CompletionTokens=extractUsageTokens(payload)
 	writeJSON(w,http.StatusOK,payload)
-	return nil
+	return metrics,nil
 }
 
-func (p *OpenRouterProvider) streamResponse(ctx context.Context,resp *http.Response,w http.ResponseWriter)*APIError{
+func (p *OpenRouterProvider) streamResponse(ctx context.Context,resp *http.Response,w http.ResponseWriter,start time.Time)(*ProviderMetrics,*APIError){
 	flusher,ok:=w.(http.Flusher)
-	if !ok{return newAPIError(500,"server_error","NEXORA_STREAMING_UNSUPPORTED","Streaming is unavailable.")}
+	if !ok{return metricsFromStart(start,500,false),newAPIError(500,"server_error","NEXORA_STREAMING_UNSUPPORTED","Streaming is unavailable.")}
 	w.Header().Set("Content-Type","text/event-stream")
 	w.Header().Set("Cache-Control","no-cache")
 	w.Header().Set("X-Accel-Buffering","no")
 	w.WriteHeader(http.StatusOK)
+	metrics:=&ProviderMetrics{Status:http.StatusOK}
 	reader:=bufio.NewReaderSize(resp.Body,32*1024)
+	firstDataSeen:=false
 	for{
 		line,err:=reader.ReadBytes('\n')
 		if len(line)>0{
-			select{case <-ctx.Done():return nil;default:}
-			if _,writeErr:=w.Write(line);writeErr!=nil{return nil}
+			select{
+			case <-ctx.Done():
+				metrics.Status=499
+				metrics.Completed=false
+				metrics.LatencyMS=durationMillisPtr(time.Since(start))
+				return metrics,nil
+			default:
+			}
+			if !firstDataSeen && isSSEDataLine(line){
+				firstDataSeen=true
+				metrics.TTFTMS=durationMillisPtr(time.Since(start))
+			}
+			updateStreamUsage(metrics,line)
+			if _,writeErr:=w.Write(line);writeErr!=nil{
+				metrics.Status=499
+				metrics.Completed=false
+				metrics.LatencyMS=durationMillisPtr(time.Since(start))
+				return metrics,nil
+			}
 			flusher.Flush()
 		}
 		if err!=nil{
-			if errors.Is(err,io.EOF){return nil}
-			return nil
+			metrics.LatencyMS=durationMillisPtr(time.Since(start))
+			if errors.Is(err,io.EOF){
+				metrics.Completed=true
+				return metrics,nil
+			}
+			metrics.Status=http.StatusBadGateway
+			metrics.Completed=false
+			return metrics,nil
 		}
 	}
+}
+
+type firstReadRecorder struct{
+	reader io.Reader
+	onFirstRead func()
+	seen bool
+}
+
+func (r *firstReadRecorder) Read(p []byte)(int,error){
+	n,err:=r.reader.Read(p)
+	if n>0 && !r.seen{
+		r.seen=true
+		if r.onFirstRead!=nil{r.onFirstRead()}
+	}
+	return n,err
+}
+
+func metricsFromStart(start time.Time,status int,completed bool)*ProviderMetrics{
+	return &ProviderMetrics{Status:status,LatencyMS:durationMillisPtr(time.Since(start)),Completed:completed}
+}
+
+func durationMillisPtr(d time.Duration)*int{
+	value:=int(d.Milliseconds())
+	return &value
+}
+
+func extractUsageTokens(payload any)(*int,*int){
+	root,ok:=payload.(map[string]any)
+	if !ok{return nil,nil}
+	usage,ok:=root["usage"].(map[string]any)
+	if !ok{return nil,nil}
+	return jsonNumberInt(usage["prompt_tokens"]),jsonNumberInt(usage["completion_tokens"])
+}
+
+func jsonNumberInt(value any)*int{
+	switch v:=value.(type){
+	case float64:
+		n:=int(v)
+		return &n
+	case int:
+		n:=v
+		return &n
+	case json.Number:
+		if parsed,err:=strconv.Atoi(v.String());err==nil{return &parsed}
+	}
+	return nil
+}
+
+func isSSEDataLine(line []byte)bool{
+	trimmed:=strings.TrimSpace(string(line))
+	if !strings.HasPrefix(trimmed,"data:"){return false}
+	payload:=strings.TrimSpace(strings.TrimPrefix(trimmed,"data:"))
+	return payload!="" && payload!="[DONE]"
+}
+
+func updateStreamUsage(metrics *ProviderMetrics,line []byte){
+	if metrics==nil{return}
+	trimmed:=strings.TrimSpace(string(line))
+	if !strings.HasPrefix(trimmed,"data:"){return}
+	payloadText:=strings.TrimSpace(strings.TrimPrefix(trimmed,"data:"))
+	if payloadText==""||payloadText=="[DONE]"{return}
+	var payload any
+	if err:=json.Unmarshal([]byte(payloadText),&payload);err!=nil{return}
+	prompt,completion:=extractUsageTokens(payload)
+	if prompt!=nil{metrics.PromptTokens=prompt}
+	if completion!=nil{metrics.CompletionTokens=completion}
 }
 
 func mapUpstreamStatus(status int)*APIError{
