@@ -1,6 +1,6 @@
 import React from "react";
 import type {ApiKey,Project,User} from "../api";
-import type {ConsoleModule} from "../components/AppShell";
+import type {ConsoleModule} from "../routing";
 
 function formatRelativeTime(value:string|null){
   if(!value)return "Never";

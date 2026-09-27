@@ -1,17 +1,7 @@
-import React,{useEffect,useMemo,useState} from "react";
+import React,{useEffect,useMemo,useRef,useState} from "react";
 import type {Project,User} from "../api";
-
-export type ConsoleModule=
-  |"Overview"
-  |"Projects"
-  |"API Keys"
-  |"Models"
-  |"Playground"
-  |"Usage"
-  |"Requests"
-  |"Settings"
-  |"Status"
-  |"Admin";
+import {useFocusTrap} from "../hooks/useFocusTrap";
+import type {ConsoleModule} from "../routing";
 
 type NavGroup="Workspace"|"Observe"|"Account";
 
@@ -19,7 +9,7 @@ type NavItem={
   id:ConsoleModule;
   label:string;
   description:string;
-  icon:"overview"|"projects"|"keys"|"models"|"playground"|"usage"|"requests"|"settings"|"status"|"admin";
+  icon:"overview"|"projects"|"keys"|"models"|"playground"|"docs"|"usage"|"requests"|"settings"|"status"|"admin";
   group:NavGroup;
 };
 
@@ -29,9 +19,10 @@ export const NAV_ITEMS:NavItem[]=[
   {id:"API Keys",label:"API Keys",description:"Issue, rotate, revoke and scope developer credentials.",icon:"keys",group:"Workspace"},
   {id:"Models",label:"Models",description:"Browse the public Nexora free-model catalog.",icon:"models",group:"Workspace"},
   {id:"Playground",label:"Playground",description:"Test OpenAI-compatible requests against the gateway.",icon:"playground",group:"Workspace"},
+  {id:"Docs",label:"Docs",description:"Integrate Nexora with OpenAI-compatible clients and direct HTTP requests.",icon:"docs",group:"Workspace"},
   {id:"Usage",label:"Usage",description:"Review request and token consumption across your keys.",icon:"usage",group:"Observe"},
   {id:"Requests",label:"Requests",description:"Inspect recent request status and performance telemetry.",icon:"requests",group:"Observe"},
-  {id:"Status",label:"Status",description:"Check control-plane and gateway service availability.",icon:"status",group:"Observe"},
+  {id:"Status",label:"Status",description:"Check control-plane, gateway, catalog and worker availability.",icon:"status",group:"Observe"},
   {id:"Settings",label:"Settings",description:"Review profile and session configuration.",icon:"settings",group:"Account"},
   {id:"Admin",label:"Admin",description:"Inspect background jobs and audit activity.",icon:"admin",group:"Account"},
 ];
@@ -43,6 +34,7 @@ function Icon({name}:{name:NavItem["icon"]}){
   if(name==="keys")return <svg {...common}><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8"/><path d="m15 8 2 2"/><path d="m17 6 2 2"/></svg>;
   if(name==="models")return <svg {...common}><path d="m12 3 8 4.5-8 4.5-8-4.5z"/><path d="m4 12 8 4.5 8-4.5"/><path d="m4 16.5 8 4.5 8-4.5"/></svg>;
   if(name==="playground")return <svg {...common}><path d="m8 9-4 3 4 3"/><path d="m16 9 4 3-4 3"/><path d="m14 5-4 14"/></svg>;
+  if(name==="docs")return <svg {...common}><path d="M6 3h9l3 3v15H6z"/><path d="M15 3v4h4"/><path d="M9 11h6"/><path d="M9 15h6"/></svg>;
   if(name==="usage")return <svg {...common}><path d="M4 19V9"/><path d="M10 19V5"/><path d="M16 19v-7"/><path d="M22 19V3"/></svg>;
   if(name==="requests")return <svg {...common}><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><circle cx="3" cy="6" r=".8" fill="currentColor" stroke="none"/><circle cx="3" cy="12" r=".8" fill="currentColor" stroke="none"/><circle cx="3" cy="18" r=".8" fill="currentColor" stroke="none"/></svg>;
   if(name==="settings")return <svg {...common}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.6v-.1A1.7 1.7 0 0 0 8 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 3.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H1.8V9.6h.1A1.7 1.7 0 0 0 3.6 8a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8 3.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V1.8h4v.1A1.7 1.7 0 0 0 15 3.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 8a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4h-.1A1.7 1.7 0 0 0 19.4 15z"/></svg>;
@@ -79,27 +71,43 @@ export function AppShell({
 }){
   const [mobileOpen,setMobileOpen]=useState(false);
   const [userMenuOpen,setUserMenuOpen]=useState(false);
+  const sidebarRef=useRef<HTMLElement|null>(null);
+  const userMenuRef=useRef<HTMLDivElement|null>(null);
+  const headingRef=useRef<HTMLHeadingElement|null>(null);
+
   const activeProject=useMemo(()=>projects.find(project=>project.id===projectId&&project.status==="active")||null,[projects,projectId]);
   const page=NAV_ITEMS.find(item=>item.id===active)??NAV_ITEMS[0];
   const activeProjects=projects.filter(project=>project.status==="active");
   const visibleItems=NAV_ITEMS.filter(item=>item.id!=="Admin"||user.role==="admin");
   const groups:NavGroup[]=["Workspace","Observe","Account"];
 
-  useEffect(()=>{
-    function onKeyDown(event:KeyboardEvent){
-      if(event.key==="Escape"){
-        setMobileOpen(false);
-        setUserMenuOpen(false);
-      }
-    }
-    window.addEventListener("keydown",onKeyDown);
-    return()=>window.removeEventListener("keydown",onKeyDown);
-  },[]);
+  useFocusTrap(sidebarRef,mobileOpen,()=>setMobileOpen(false));
 
   useEffect(()=>{
     document.body.classList.toggle("nav-open",mobileOpen);
     return()=>document.body.classList.remove("nav-open");
   },[mobileOpen]);
+
+  useEffect(()=>{
+    function onPointerDown(event:MouseEvent){
+      if(userMenuOpen&&userMenuRef.current&&!userMenuRef.current.contains(event.target as Node)){
+        setUserMenuOpen(false);
+      }
+    }
+    function onKeyDown(event:KeyboardEvent){
+      if(event.key==="Escape")setUserMenuOpen(false);
+    }
+    document.addEventListener("mousedown",onPointerDown);
+    document.addEventListener("keydown",onKeyDown);
+    return()=>{
+      document.removeEventListener("mousedown",onPointerDown);
+      document.removeEventListener("keydown",onKeyDown);
+    };
+  },[userMenuOpen]);
+
+  useEffect(()=>{
+    window.setTimeout(()=>headingRef.current?.focus({preventScroll:true}),0);
+  },[active]);
 
   function navigate(module:ConsoleModule){
     onNavigate(module);
@@ -108,7 +116,14 @@ export function AppShell({
   }
 
   return <div className="app-layout">
-    <aside className={"app-sidebar "+(mobileOpen?"is-open":"")} aria-label="Primary navigation">
+    <a className="skip-link" href="#main-content">Skip to main content</a>
+
+    <aside
+      ref={sidebarRef}
+      className={"app-sidebar "+(mobileOpen?"is-open":"")}
+      aria-label="Primary navigation"
+      tabIndex={mobileOpen?-1:undefined}
+    >
       <div className="brand-row">
         <div className="brand-mark" aria-hidden="true">N</div>
         <div className="brand-copy">
@@ -154,7 +169,7 @@ export function AppShell({
             <span/><span/><span/>
           </button>
           <div className="page-heading">
-            <h1>{page.label}</h1>
+            <h1 ref={headingRef} tabIndex={-1}>{page.label}</h1>
             <p>{page.description}</p>
           </div>
         </div>
@@ -168,12 +183,13 @@ export function AppShell({
             </select>
           </label>
 
-          <div className="user-menu">
+          <div className="user-menu" ref={userMenuRef}>
             <button
               className="user-menu-trigger"
               onClick={()=>setUserMenuOpen(open=>!open)}
               aria-haspopup="menu"
               aria-expanded={userMenuOpen}
+              aria-controls="user-menu-popover"
             >
               <span className="avatar">{initials(user.display_name,user.email)}</span>
               <span className="user-menu-copy">
@@ -182,7 +198,7 @@ export function AppShell({
               </span>
               <span className="chevron" aria-hidden="true">⌄</span>
             </button>
-            {userMenuOpen&&<div className="user-popover" role="menu">
+            {userMenuOpen&&<div className="user-popover" role="menu" id="user-menu-popover">
               <div className="user-popover-head">
                 <span className="avatar avatar-lg">{initials(user.display_name,user.email)}</span>
                 <div><strong>{user.display_name}</strong><small>{user.email}</small></div>
@@ -200,7 +216,7 @@ export function AppShell({
         </div>
       </header>
 
-      <main className="app-content">
+      <main className="app-content" id="main-content" tabIndex={-1}>
         <div className="content-container">{children}</div>
       </main>
     </div>
