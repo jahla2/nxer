@@ -12,10 +12,7 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version: "1.23.x"}
       - run: go mod tidy
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gateway-go-module-lock
-          path: apps/gateway/go.sum
+      - run: git diff --exit-code go.mod go.sum
       - run: go test ./...
   control-api:
     runs-on: ubuntu-latest
