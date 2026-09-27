@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"strconv"
 	"time"
 )
 
@@ -73,7 +74,7 @@ func (p *OpenRouterProvider) SyncFreeModels(ctx context.Context,catalog *ModelCa
 	models:=make([]Model,0,len(payload.Data)+1)
 	models=append(models,Model{ID:"auto-free",Object:"model",OwnedBy:"nexora",DisplayName:"Auto Free",Status:"active",Free:true})
 	for _,m:=range payload.Data{
-		if m.ID==""||m.Pricing.Prompt!="0"||m.Pricing.Completion!="0"||!containsString(m.Architecture.OutputModalities,"text"){continue}
+		if m.ID==""||!zeroPrice(m.Pricing.Prompt)||!zeroPrice(m.Pricing.Completion)||!containsString(m.Architecture.OutputModalities,"text"){continue}
 		models=append(models,Model{ID:m.ID,Object:"model",OwnedBy:"openrouter",DisplayName:m.Name,ContextLength:m.ContextLength,Status:"active",Free:true,Capabilities:map[string]bool{"text":true}})
 	}
 	catalog.Replace(models)
@@ -141,3 +142,10 @@ func mapUpstreamStatus(status int)*APIError{
 }
 
 func containsString(values []string,want string)bool{for _,v:=range values{if v==want{return true}};return false}
+
+func zeroPrice(value string) bool {
+	value=strings.TrimSpace(value)
+	if value=="" { return false }
+	parsed,err:=strconv.ParseFloat(value,64)
+	return err==nil && parsed==0
+}
