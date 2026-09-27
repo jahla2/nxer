@@ -1,0 +1,241 @@
+name: nexora
+
+x-service-security: &service-security
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+
+x-app-env: &app-env
+  env_file:
+    - ../.env.production
+
+services:
+  postgres:
+    <<: *service-security
+    image: postgres:17-alpine
+    env_file:
+      - ../.env.production
+    networks: [backend]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    <<: *service-security
+    image: redis:8-alpine
+    env_file:
+      - ../.env.production
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction --save "" --appendonly no
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", 'redis-cli -a "$$REDIS_PASSWORD" ping | grep PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  migrate:
+    image: nexora-migrate:${NEXORA_VERSION:-0.1.0-alpha}
+    build:
+      context: ..
+      dockerfile: infra/postgres/Dockerfile.migrate
+    env_file:
+      - ../.env.production
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  control-fastapi:
+    <<: [*service-security, *app-env]
+    image: nexora-control:${NEXORA_VERSION:-0.1.0-alpha}
+    build:
+      context: ../apps/control-api
+      dockerfile: Dockerfile
+    networks: [frontend, backend]
+    expose: ["8001"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  bootstrap:
+    image: nexora-control:${NEXORA_VERSION:-0.1.0-alpha}
+    env_file:
+      - ../.env.production
+    command: ["python", "-m", "nexora_control.bootstrap"]
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  gateway-go:
+    <<: [*service-security, *app-env]
+    image: nexora-gateway:${NEXORA_VERSION:-0.1.0-alpha}
+    build:
+      context: ../apps/gateway
+      dockerfile: Dockerfile
+    networks: [frontend, backend]
+    expose: ["8080"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  celery-worker:
+    <<: [*service-security, *app-env]
+    image: nexora-worker:${NEXORA_VERSION:-0.1.0-alpha}
+    build:
+      context: ../workers/tasks
+      dockerfile: Dockerfile
+    command:
+      - celery
+      - -A
+      - worker.app
+      - worker
+      - --loglevel=INFO
+      - --concurrency=${CELERY_WORKER_CONCURRENCY:-2}
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  celery-beat:
+    <<: [*service-security, *app-env]
+    image: nexora-worker:${NEXORA_VERSION:-0.1.0-alpha}
+    command:
+      - celery
+      - -A
+      - worker.app
+      - beat
+      - --loglevel=INFO
+      - --schedule=/tmp/celerybeat-schedule
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      celery-worker:
+        condition: service_started
+
+  web-react:
+    <<: *service-security
+    image: nexora-web:${NEXORA_VERSION:-0.1.0-alpha}
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+    networks: [frontend]
+    expose: ["8080"]
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m,uid=101,gid=101
+      - /var/run:size=4m,uid=101,gid=101
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/web-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  nginx:
+    <<: *service-security
+    image: nexora-edge:${NEXORA_VERSION:-0.1.0-alpha}
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    networks: [frontend]
+    ports:
+      - "${NEXORA_BIND_ADDRESS:-127.0.0.1}:${NEXORA_HTTP_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m,uid=101,gid=101
+      - /var/run:size=4m,uid=101,gid=101
+    depends_on:
+      web-react:
+        condition: service_healthy
+      control-fastapi:
+        condition: service_healthy
+      gateway-go:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/edge-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
+    profiles: ["tunnel"]
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+      - --token
+      - ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    networks: [frontend]
+    depends_on:
+      nginx:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data: {}
+  postgres_backups: {}
