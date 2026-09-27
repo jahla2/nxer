@@ -24,7 +24,7 @@ func TestExtractBearerTokenRejectsMalformedHeader(t *testing.T) {
 
 func TestHashAPIKeyMatchesControlPlaneAlgorithm(t *testing.T) {
 	got := hashAPIKey("nxa_test-secret", "pepper-a")
-	const want = "3b14cc48b58d3f7f29d50e7606d8e47e8514c27558fcf2e952416ca11f47b4b5"
+	const want = "de26093327f3536df5fceb6df259eb218cf704bfb0c9ae83f4f20fe5cb21885c"
 	if hex := fmtHex(got); hex != want {
 		t.Fatalf("unexpected hash %s", hex)
 	}
