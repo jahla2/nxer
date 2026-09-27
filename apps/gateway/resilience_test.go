@@ -113,6 +113,7 @@ func TestCircuitBreakerFailedProbeReopens(t *testing.T) {
 
 func TestRetryableProviderStatusClassification(t *testing.T) {
 	for _, status := range []int{
+		http.StatusRequestTimeout,
 		http.StatusTooManyRequests,
 		http.StatusInternalServerError,
 		http.StatusBadGateway,
