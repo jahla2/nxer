@@ -122,7 +122,7 @@ func publicModelAlias(displayName, upstreamID string) string {
 		base = "model"
 	}
 	sum := sha256.Sum256([]byte(strings.TrimSpace(upstreamID)))
-	return "nexora/" + base + "-" + hex.EncodeToString(sum[:4])
+	return "nexora/" + base + "-" + hex.EncodeToString(sum[:6])
 }
 
 func slugModelName(value string) string {
