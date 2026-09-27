@@ -197,17 +197,18 @@ function App(){
    </main>;
  }
 
- return <main className="shell">
-   <header>
-     <div><p className="eyebrow">NEXORA AI</p><h1>Developer Console</h1><p className="subtitle">Manage projects, API credentials and free-model access.</p></div>
-     <div className="user-summary"><div><strong>{user.display_name}</strong><small>{user.email}</small></div><button onClick={logout}>Logout</button></div>
-   </header>
-
-   <nav>{modules.map(x=><button key={x} className={active===x?"active":""} onClick={()=>{setActive(x);setData(null);setError("")}}>{x}</button>)}</nav>
-
+ return <AppShell
+   user={user}
+   active={active}
+   onNavigate={module=>{setActive(module);setData(null);setError("")}}
+   projects={projects}
+   projectId={projectId}
+   onProjectChange={setProjectId}
+   onLogout={logout}
+ >
    {error&&<p className="error global-error">{error}</p>}
 
-   <section className="panel"><h2>{active}</h2>
+   <section className="panel page-panel">
      {active==="Overview"&&<div className="overview-grid">
        <div className="stat-card"><span>Signed in</span><strong>{user.display_name}</strong></div>
        <div className="stat-card"><span>Projects</span><strong>{projects.filter(p=>p.status==="active").length}</strong></div>
@@ -296,7 +297,7 @@ function App(){
      <p>{confirmDialog.message}</p>
      <div className="dialog-actions"><button onClick={()=>setConfirmDialog(null)}>Cancel</button><button className="danger" disabled={busy} onClick={runConfirmedAction}>Confirm</button></div>
    </Dialog>}
- </main>;
+ </AppShell>;
 }
 
 createRoot(document.getElementById("root")!).render(<React.StrictMode><App/></React.StrictMode>);
