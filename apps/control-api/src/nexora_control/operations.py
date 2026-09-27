@@ -25,7 +25,6 @@ TRACKED_JOBS = (
 
 
 class CatalogStatusView(BaseModel):
-    provider_key: str
     status: str
     last_attempt_at: datetime | None
     last_success_at: datetime | None
@@ -172,7 +171,11 @@ def operations_status(
                 started_at=row["started_at"] if row else None,
                 completed_at=row["completed_at"] if row else None,
                 duration_ms=row["duration_ms"] if row else None,
-                error_message=row["error_message"] if row else None,
+                error_message=(
+                    "Background job failed. Administrator review is required."
+                    if row and row["status"] == "failed"
+                    else None
+                ),
             )
         )
 
@@ -182,7 +185,6 @@ def operations_status(
     return OperationsStatusView(
         status=overall,
         catalog=CatalogStatusView(
-            provider_key=catalog_row["provider_key"],
             status=catalog_row["status"],
             last_attempt_at=catalog_row["last_attempt_at"],
             last_success_at=last_success,
