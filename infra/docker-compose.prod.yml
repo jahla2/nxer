@@ -43,8 +43,18 @@ services:
       retries: 20
       start_period: 5s
 
+  validate-config:
+    image: nexora-release-tools:${NEXORA_VERSION:-0.1.0-alpha}
+    env_file:
+      - ../.env.production
+    command: ["nexora-validate-production-env"]
+    networks: [backend]
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
   migrate:
-    image: nexora-migrate:${NEXORA_VERSION:-0.1.0-alpha}
+    image: nexora-release-tools:${NEXORA_VERSION:-0.1.0-alpha}
     build:
       context: ..
       dockerfile: infra/postgres/Dockerfile.migrate
@@ -52,6 +62,8 @@ services:
       - ../.env.production
     networks: [backend]
     depends_on:
+      validate-config:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     restart: "no"
@@ -210,6 +222,45 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  backup:
+    image: nexora-release-tools:${NEXORA_VERSION:-0.1.0-alpha}
+    profiles: ["ops"]
+    env_file:
+      - ../.env.production
+    environment:
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    command: ["nexora-backup"]
+    networks: [backend]
+    volumes:
+      - postgres_backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+
+  restore:
+    image: nexora-release-tools:${NEXORA_VERSION:-0.1.0-alpha}
+    profiles: ["restore"]
+    env_file:
+      - ../.env.production
+    environment:
+      BACKUP_FILE: ${BACKUP_FILE:-}
+      RESTORE_DATABASE_URL: ${RESTORE_DATABASE_URL:-}
+      ALLOW_DESTRUCTIVE_RESTORE: ${ALLOW_DESTRUCTIVE_RESTORE:-no}
+    command: ["nexora-restore"]
+    networks: [backend]
+    volumes:
+      - postgres_backups:/backups:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
 
   cloudflared:
     image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
