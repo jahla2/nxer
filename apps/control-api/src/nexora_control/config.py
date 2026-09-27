@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     environment: str = "development"
     database_url: str = "postgresql://nexora:nexora@postgres:5432/nexora"
     redis_url: str = "redis://:nexora@redis:6379/0"
+    api_key_hash_pepper: str = ""
+    control_admin_token: str = ""
 
 @lru_cache
 def get_settings() -> Settings:
