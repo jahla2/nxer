@@ -44,3 +44,34 @@ const result = await client.chat.completions.create({ model: "auto-free", messag
 
 ## Production validation
 Run migrations in order before starting services. Validate `/ready`, verify the free-model catalog, run the security/load suites, and perform a database backup/restore drill before exposing the Cloudflare hostname.
+
+
+## Run locally
+
+Prerequisites: Docker Desktop with Docker Compose v2 and an OpenRouter API key.
+
+```bash
+git checkout main
+git pull
+copy .env.example .env
+```
+
+On macOS/Linux use `cp .env.example .env`. Edit `.env` and set `OPENROUTER_API_KEY`. For a private local machine the provided development-only placeholders can boot the stack; replace all three secret placeholders before sharing or deploying it.
+
+Start the full stack from the repository root:
+
+```bash
+docker compose -f infra/docker-compose.yml up --build
+```
+
+The migration and bootstrap services run automatically and idempotently. Open `http://localhost:8080`. In the console enter the same `CONTROL_ADMIN_TOKEN` from `.env`. A Local Project is bootstrapped. Create an API key in the API Keys module; the UI saves the one-time raw key locally for Models and Playground.
+
+Useful local endpoints:
+
+- Dashboard: `http://localhost:8080/`
+- Gateway health/readiness: `http://localhost:8080/health`, `http://localhost:8080/ready`
+- Control health/readiness: `http://localhost:8080/api/health`, `http://localhost:8080/api/ready`
+- Models: `http://localhost:8080/v1/models`
+- Chat: `http://localhost:8080/v1/chat/completions`
+
+Stop with `docker compose -f infra/docker-compose.yml down`. Add `-v` only when you intentionally want to delete the local PostgreSQL volume.
