@@ -135,3 +135,27 @@ func TestRetryableProviderStatusClassification(t *testing.T) {
 		}
 	}
 }
+
+
+func TestStaleSuccessfulPermitCannotCloseNewlyOpenedCircuit(t *testing.T) {
+	breaker := NewCircuitBreaker(1, time.Minute)
+
+	staleSuccess, ok := breaker.Acquire()
+	if !ok {
+		t.Fatal("expected first request to acquire permit")
+	}
+	failing, ok := breaker.Acquire()
+	if !ok {
+		t.Fatal("expected concurrent request to acquire permit")
+	}
+
+	failing.Failure()
+	if breaker.State() != CircuitOpen {
+		t.Fatalf("expected open circuit, got %s", breaker.State())
+	}
+
+	staleSuccess.Success()
+	if breaker.State() != CircuitOpen {
+		t.Fatalf("stale success must not close a newer open circuit, got %s", breaker.State())
+	}
+}
