@@ -18,11 +18,33 @@ jobs:
 
   control-api:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: nexora
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nexora"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nexora
+      SESSION_SECRET: test-session-secret-that-is-longer-than-thirty-two-characters
+      API_KEY_HASH_PEPPER: test-api-key-pepper-that-is-longer-than-thirty-two-characters
+      ENVIRONMENT: test
+      DEV_EXPOSE_PASSWORD_RESET_TOKEN: "true"
+      LOCAL_BOOTSTRAP_ENABLED: "false"
     defaults: {run: {working-directory: apps/control-api}}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.13"}
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: cd ../.. && MIGRATIONS_DIR="$GITHUB_WORKSPACE/migrations" sh infra/postgres/migrate.sh
       - run: pip install -e ".[dev]"
       - run: pytest -q
 
@@ -72,7 +94,7 @@ jobs:
       - run: sh infra/postgres/migrate.sh
       - name: Verify schema
         run: |
-          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "4"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "5"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT is_nullable FROM information_schema.columns WHERE table_name='usage_daily' AND column_name='model_id'")" = "YES"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_daily' AND indexname='ux_usage_daily_dimensions'")" = "1"
 
