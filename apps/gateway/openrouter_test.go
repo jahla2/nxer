@@ -268,3 +268,39 @@ func TestChatRejectsUnsupportedInternalProviderRoute(t *testing.T) {
 		t.Fatalf("unexpected error %#v", apiErr)
 	}
 }
+
+
+func TestChatStreamingRequiresDoneMarker(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"upstream-stream-id","model":"vendor/free-text","choices":[{"delta":{"content":"partial"}}]}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	provider := &OpenRouterProvider{
+		baseURL: server.URL,
+		apiKey:  "secret",
+		client:  server.Client(),
+	}
+	route := Model{
+		ID:          "nexora/free-text-public",
+		UpstreamID:  "vendor/free-text",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	metrics, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+	if apiErr != nil {
+		t.Fatalf("unexpected API error after stream headers: %#v", apiErr)
+	}
+	if metrics == nil || metrics.Completed {
+		t.Fatalf("truncated stream must not be completed: %#v", metrics)
+	}
+	if metrics.Status != http.StatusBadGateway {
+		t.Fatalf("expected bad gateway telemetry for truncated stream, got %#v", metrics)
+	}
+}
