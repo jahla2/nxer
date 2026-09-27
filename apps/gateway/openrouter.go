@@ -124,20 +124,63 @@ func (p *OpenRouterProvider) ListFreeModels(ctx context.Context) ([]DiscoveredMo
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := p.newRequest(ctx, http.MethodGet, "/models", nil)
-	if err != nil {
-		return nil, err
+	policy := p.effectiveRetryPolicy()
+	var resp *http.Response
+	var err error
+
+	for attempt := 1; attempt <= policy.MaxAttempts; attempt++ {
+		req, requestErr := p.newRequest(ctx, http.MethodGet, "/models", nil)
+		if requestErr != nil {
+			return nil, requestErr
+		}
+
+		resp, err = p.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil || attempt >= policy.MaxAttempts {
+				return nil, err
+			}
+			delay := policy.Backoff(attempt, "")
+			logProviderRetry(ctx, p.Key(), attempt, policy.MaxAttempts, delay, "catalog_transport_error")
+			if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+				return nil, sleepErr
+			}
+			continue
+		}
+
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			break
+		}
+
+		statusCode := resp.StatusCode
+		retryAfter := resp.Header.Get("Retry-After")
+		drainAndClose(resp.Body)
+		resp = nil
+
+		if !isRetryableProviderStatus(statusCode) || attempt >= policy.MaxAttempts {
+			return nil, errors.New("upstream model catalog request failed")
+		}
+
+		delay := policy.Backoff(attempt, retryAfter)
+		logProviderRetry(
+			ctx,
+			p.Key(),
+			attempt,
+			policy.MaxAttempts,
+			delay,
+			"catalog_status_"+strconv.Itoa(statusCode),
+		)
+		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+			return nil, sleepErr
+		}
 	}
 
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp == nil {
+		if err != nil {
+			return nil, err
+		}
 		return nil, errors.New("upstream model catalog request failed")
 	}
+	defer resp.Body.Close()
 
 	var payload upstreamModelsResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&payload); err != nil {
