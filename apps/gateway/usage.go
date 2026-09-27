@@ -27,10 +27,12 @@ type usageWork struct {
 }
 
 type UsageRecorder struct {
-	db      *sql.DB
-	queue   chan usageWork
-	wg      sync.WaitGroup
-	closeMu sync.Once
+	db        *sql.DB
+	queue     chan usageWork
+	wg        sync.WaitGroup
+	closeMu   sync.Once
+	touchMu   sync.Mutex
+	lastTouch map[string]time.Time
 }
 
 func NewUsageRecorder(databaseURL string) (*UsageRecorder, error) {
@@ -47,8 +49,9 @@ func NewUsageRecorder(databaseURL string) (*UsageRecorder, error) {
 	db.SetConnMaxLifetime(30 * time.Minute)
 
 	recorder := &UsageRecorder{
-		db:    db,
-		queue: make(chan usageWork, getenvInt("USAGE_QUEUE_SIZE", 2048)),
+		db:        db,
+		queue:     make(chan usageWork, getenvInt("USAGE_QUEUE_SIZE", 2048)),
+		lastTouch: make(map[string]time.Time),
 	}
 	recorder.wg.Add(1)
 	go recorder.run()
@@ -89,10 +92,23 @@ func (u *UsageRecorder) TouchLastUsed(apiKeyID string) bool {
 	if u == nil || apiKeyID == "" {
 		return false
 	}
+
+	now := time.Now()
+	u.touchMu.Lock()
+	if last, ok := u.lastTouch[apiKeyID]; ok && now.Sub(last) < time.Minute {
+		u.touchMu.Unlock()
+		return true
+	}
+	u.lastTouch[apiKeyID] = now
+	u.touchMu.Unlock()
+
 	select {
 	case u.queue <- usageWork{touchKeyID: apiKeyID}:
 		return true
 	default:
+		u.touchMu.Lock()
+		delete(u.lastTouch, apiKeyID)
+		u.touchMu.Unlock()
 		return false
 	}
 }
@@ -114,6 +130,9 @@ func (u *UsageRecorder) run() {
 		}
 		if work.touchKeyID != "" {
 			if err := u.touchLastUsed(ctx, work.touchKeyID); err != nil {
+				u.touchMu.Lock()
+				delete(u.lastTouch, work.touchKeyID)
+				u.touchMu.Unlock()
 				gatewayLogger.Warn(
 					"api key last-used persistence failed",
 					"event", "last_used_persist_failed",
