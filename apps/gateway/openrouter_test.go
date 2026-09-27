@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -624,4 +625,98 @@ func TestListFreeModelsRetriesTransientCatalogFailure(t *testing.T) {
 	if len(models) != 1 || models[0].UpstreamID != "vendor/free-text" {
 		t.Fatalf("unexpected catalog %#v", models)
 	}
+}
+
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestChatRetriesTransportFailureOnlyBeforeRequestWasWritten(t *testing.T) {
+	route := Model{
+		ID:          "nexora/transport-retry",
+		UpstreamID:  "vendor/transport-retry",
+		ProviderKey: openRouterProviderKey,
+	}
+	req := &ChatCompletionRequest{
+		Model:    route.ID,
+		Messages: []ChatMessage{{Role: "user", Content: "hello"}},
+	}
+
+	t.Run("safe pre-write failure retries", func(t *testing.T) {
+		var attempts atomic.Int32
+		client := &http.Client{
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				if attempts.Add(1) == 1 {
+					return nil, fmt.Errorf("dial failed before request write")
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"id":"upstream","model":"vendor/transport-retry","choices":[]}`,
+					)),
+					Request: r,
+				}, nil
+			}),
+		}
+		provider := &OpenRouterProvider{
+			baseURL: "https://provider.invalid",
+			apiKey:  "secret",
+			client:  client,
+			retryPolicy: RetryPolicy{
+				MaxAttempts: 2,
+				BaseDelay:   0,
+				MaxDelay:    0,
+			},
+			breaker:        NewCircuitBreaker(3, time.Second),
+			requestTimeout: time.Second,
+		}
+
+		metrics, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+		if apiErr != nil {
+			t.Fatalf("safe transport retry should recover: %#v", apiErr)
+		}
+		if metrics == nil || !metrics.Completed {
+			t.Fatalf("expected completed response, got %#v", metrics)
+		}
+		if attempts.Load() != 2 {
+			t.Fatalf("expected retry after pre-write failure, attempts=%d", attempts.Load())
+		}
+	})
+
+	t.Run("post-write failure is not retried", func(t *testing.T) {
+		var attempts atomic.Int32
+		client := &http.Client{
+			Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.WroteRequest != nil {
+					trace.WroteRequest(httptrace.WroteRequestInfo{})
+				}
+				return nil, fmt.Errorf("connection failed after request write")
+			}),
+		}
+		provider := &OpenRouterProvider{
+			baseURL: "https://provider.invalid",
+			apiKey:  "secret",
+			client:  client,
+			retryPolicy: RetryPolicy{
+				MaxAttempts: 2,
+				BaseDelay:   0,
+				MaxDelay:    0,
+			},
+			breaker:        NewCircuitBreaker(3, time.Second),
+			requestTimeout: time.Second,
+		}
+
+		_, apiErr := provider.Chat(context.Background(), req, route, httptest.NewRecorder())
+		if apiErr == nil || apiErr.Code != "NEXORA_UPSTREAM_ERROR" {
+			t.Fatalf("expected transport error, got %#v", apiErr)
+		}
+		if attempts.Load() != 1 {
+			t.Fatalf("post-write failure must not be retried, attempts=%d", attempts.Load())
+		}
+	})
 }
