@@ -10,7 +10,7 @@ def test_generated_api_key_has_nexora_prefix_and_unique_secret() -> None:
     assert second.startswith("nxa_live_")
     assert first != second
     assert "." in first
-    assert len(first.split(".", 1)[1]) >= 40
+    assert len(first.split(".", 1)[1]) >= 64
 
 
 def test_hash_is_deterministic_and_peppered() -> None:
