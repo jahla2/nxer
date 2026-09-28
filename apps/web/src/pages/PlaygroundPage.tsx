@@ -141,8 +141,7 @@ export function PlaygroundPage({
     setError("");
   }
 
-  async function deleteSession(event:React.MouseEvent,id:string){
-    event.stopPropagation();
+  async function removeSession(id:string){
     const target=sessions.find(item=>item.id===id);
     if(!window.confirm(`Delete "${target?.title||"this chat"}"? This removes its Playground history.`))return;
     try{
@@ -165,7 +164,6 @@ export function PlaygroundPage({
       if(!sessionId){
         const created=await api.createPlaygroundSession(projectId,selectedModelId);
         sessionId=created.id;
-        setActiveSessionId(created.id);
         setSessions(current=>[created,...current.filter(item=>item.id!==created.id)]);
       }
 
@@ -193,6 +191,7 @@ export function PlaygroundPage({
         turn.user_message,
         turn.assistant_message,
       ]);
+      setActiveSessionId(turn.session.id);
       setSessions(current=>[
         turn.session,
         ...current.filter(item=>item.id!==turn.session.id),
@@ -200,6 +199,7 @@ export function PlaygroundPage({
     }catch(err){
       setError(err instanceof Error?err.message:String(err));
       if(sessionId){
+        setActiveSessionId(sessionId);
         try{
           const refreshed=await api.playgroundSession(sessionId);
           setMessages(refreshed.messages);
@@ -271,12 +271,12 @@ export function PlaygroundPage({
               tabIndex={0}
               className="playground-delete-chat"
               aria-label={`Delete ${item.title}`}
-              onClick={event=>void deleteSession(event,item.id)}
+              onClick={event=>{event.stopPropagation();void removeSession(item.id)}}
               onKeyDown={event=>{
                 if(event.key==="Enter"||event.key===" "){
                   event.preventDefault();
                   event.stopPropagation();
-                  void deleteSession(event as unknown as React.MouseEvent,item.id);
+                  void removeSession(item.id);
                 }
               }}
             >×</span>
