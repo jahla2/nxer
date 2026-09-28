@@ -1890,3 +1890,38 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   .playground-composer-meta span:first-child{display:none}
   .playground-composer-meta{justify-content:flex-end}
 }
+
+
+/* Playground streaming + accessible history controls */
+.playground-history-open{
+  flex:1;min-width:0;min-height:38px;padding:0;border:0;background:transparent;
+  display:flex;align-items:center;justify-content:space-between;gap:8px;text-align:left;color:inherit;
+}
+.playground-history-open:hover:not(:disabled),
+.playground-history-open:active:not(:disabled){
+  background:transparent;border:0;transform:none;
+}
+.playground-history-open time{font-size:8px;color:#596985;flex:0 0 auto}
+.playground-history-open:focus-visible{
+  outline:2px solid rgba(101,137,255,.28);outline-offset:2px;border-radius:6px;
+}
+.playground-delete-chat{
+  padding:0;border:0;background:transparent;flex:0 0 auto;
+}
+.playground-delete-chat:hover:not(:disabled){
+  border:0;background:rgba(255,105,124,.10);color:#ff8c9a;
+}
+.playground-delete-chat:disabled{opacity:.28}
+.playground-history-item:focus-within .playground-delete-chat{opacity:1}
+.playground-stream-cursor{
+  display:inline-block;width:2px;height:1.05em;margin-left:3px;vertical-align:-.14em;
+  border-radius:2px;background:#8bb2ff;animation:playgroundCursor .8s steps(1,end) infinite;
+}
+@keyframes playgroundCursor{0%,45%{opacity:1}46%,100%{opacity:.12}}
+.playground-send.stop{
+  background:rgba(255,255,255,.08);border-color:rgba(151,167,204,.14);
+  color:#d7dfef;box-shadow:none;font-size:10px;
+}
+.playground-send.stop:hover:not(:disabled){
+  background:rgba(255,255,255,.12);border-color:rgba(164,181,220,.20);color:#fff;
+}
