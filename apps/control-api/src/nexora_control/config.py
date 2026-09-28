@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     api_key_hash_pepper: str = "local-dev-change-this-to-a-long-random-secret"
     session_secret: str = "local-dev-change-this-to-another-long-random-secret"
     control_admin_token: str = "local-dev-admin-token-change-me"
+    playground_internal_token: str = "local-dev-playground-token-change-me-please"
+    gateway_internal_url: str = "http://gateway-go:8080"
+    playground_gateway_timeout_seconds: int = Field(default=100, ge=10, le=330)
 
     access_token_ttl_minutes: int = Field(default=15, ge=1, le=60)
     refresh_token_ttl_days: int = Field(default=30, ge=1, le=90)
@@ -58,6 +61,7 @@ class Settings(BaseSettings):
         require_secret("API_KEY_HASH_PEPPER", self.api_key_hash_pepper, 32)
         require_secret("SESSION_SECRET", self.session_secret, 32)
         require_secret("CONTROL_ADMIN_TOKEN", self.control_admin_token, 24)
+        require_secret("PLAYGROUND_INTERNAL_TOKEN", self.playground_internal_token, 32)
 
         if not self.dashboard_url.lower().startswith("https://"):
             raise ValueError("DASHBOARD_URL must use https:// in production")

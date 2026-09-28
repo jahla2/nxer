@@ -6,6 +6,7 @@ from nexora_control.config import get_settings
 from nexora_control.console import router as console_router
 from nexora_control.database import get_connection
 from nexora_control.operations import router as operations_router
+from nexora_control.playground import router as playground_router
 
 
 settings = get_settings()
@@ -14,6 +15,7 @@ app.include_router(auth_router)
 app.include_router(api_keys_router)
 app.include_router(console_router)
 app.include_router(operations_router)
+app.include_router(playground_router)
 
 
 @app.get("/health")

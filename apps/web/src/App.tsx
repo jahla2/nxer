@@ -89,7 +89,6 @@ function AuthenticatedConsole({user}:{user:User}){
   const [keys,setKeys]=useState<ApiKey[]>([]);
   const [catalogModels,setCatalogModels]=useState<ConsoleModel[]>([]);
   const [error,setError]=useState("");
-  const [chatPrompt,setChatPrompt]=useState("Say hello from Nexora");
   const [model,setModel]=useState("auto-free");
   const [busy,setBusy]=useState(false);
 
@@ -326,7 +325,7 @@ function AuthenticatedConsole({user}:{user:User}){
         <Route path="/projects" element={<ProjectsPage projects={projects} projectId={projectId} onSelect={setProjectId} onCreate={openCreateProject} onRename={openRenameProject} onArchive={confirmArchive}/>}/>
         <Route path="/api-keys" element={<ApiKeysPage projects={projects} projectId={projectId} keys={keys} models={catalogModels} onProjectChange={setProjectId} onCreate={openCreateKey} onEdit={openEditKey} onRotate={confirmRotate} onRevoke={confirmRevoke}/>}/>
         <Route path="/models" element={<ModelsPage apiKey={key} onApiKeyChange={setKey} onUseModel={modelId=>{setModel(modelId);navigateModule("Playground")}}/>}/>
-        <Route path="/playground" element={<PlaygroundPage apiKey={key} onApiKeyChange={setKey} model={model} onModelChange={setModel} prompt={chatPrompt} onPromptChange={setChatPrompt}/>}/>
+        <Route path="/playground" element={<PlaygroundPage projectId={projectId} models={catalogModels} initialModelPublicId={model}/>}/>
         <Route path="/usage" element={<UsagePage/>}/>
         <Route path="/requests" element={<RequestsPage/>}/>
         <Route path="/status" element={<StatusPage/>}/>
@@ -361,7 +360,7 @@ function AuthenticatedConsole({user}:{user:User}){
       </div>
       <div className="dialog-actions">
         <button data-autofocus onClick={copySecret}>Copy key</button>
-        <button onClick={()=>{setKey(secretDialog.secret);setSecretDialog(null);navigateModule("Playground")}}>Use in Playground</button>
+        <button onClick={()=>{setSecretDialog(null);navigateModule("Playground")}}>Open Playground</button>
         <button className="primary" onClick={()=>setSecretDialog(null)}>Done</button>
       </div>
     </Dialog>}
