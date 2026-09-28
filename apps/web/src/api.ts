@@ -194,6 +194,65 @@ export type ChatCompletion={
   };
 };
 
+export type PlaygroundSession={
+  id:string;
+  project_id:string;
+  title:string;
+  selected_model_id:string|null;
+  selected_model_public_id:string|null;
+  selected_model_display_name:string|null;
+  preview:string|null;
+  created_at:string;
+  updated_at:string;
+};
+
+export type PlaygroundMessage={
+  id:string;
+  session_id:string;
+  role:"user"|"assistant";
+  content:string;
+  model_id:string|null;
+  model_public_id:string|null;
+  model_display_name:string|null;
+  request_id:string|null;
+  status:number|null;
+  ttft_ms:number|null;
+  latency_ms:number|null;
+  prompt_tokens:number|null;
+  completion_tokens:number|null;
+  created_at:string;
+};
+
+export type PlaygroundConversation={
+  session:PlaygroundSession;
+  messages:PlaygroundMessage[];
+};
+
+export type PlaygroundTurn={
+  session:PlaygroundSession;
+  user_message:PlaygroundMessage;
+  assistant_message:PlaygroundMessage;
+};
+
+export type PlaygroundStreamMetrics={
+  status?:number;
+  ttft_ms?:number|null;
+  latency_ms?:number|null;
+  prompt_tokens?:number|null;
+  completion_tokens?:number|null;
+  total_tokens?:number|null;
+};
+
+export type PlaygroundStreamDone={
+  request_id?:string|null;
+  metrics?:PlaygroundStreamMetrics;
+};
+
+export type PlaygroundStreamHandlers={
+  onDelta:(content:string)=>void;
+  onDone?:(summary:PlaygroundStreamDone)=>void;
+};
+
 const CONTROL="/api";
 const GATEWAY="/v1";
 
@@ -215,6 +274,89 @@ async function rawJson<T>(url:string,init:RequestInit={},retryAuth=true):Promise
 
 function mutationHeaders(extra:Record<string,string>={}):Record<string,string>{
   return {"Content-Type":"application/json","X-CSRF-Token":csrfToken(),...extra};
+}
+
+async function streamPlaygroundMessage(
+  sessionId:string,
+  content:string,
+  modelId:string,
+  handlers:PlaygroundStreamHandlers,
+  signal?:AbortSignal,
+  retryAuth=true,
+):Promise<PlaygroundStreamDone>{
+  const url=`${CONTROL}/playground/sessions/${encodeURIComponent(sessionId)}/stream`;
+  const response=await fetch(url,{
+    method:"POST",
+    credentials:"same-origin",
+    headers:mutationHeaders({"Accept":"text/event-stream"}),
+    body:JSON.stringify({content,model_id:modelId}),
+    signal,
+  });
+
+  if(response.status===401&&retryAuth){
+    const refreshed=await fetch(`${CONTROL}/auth/refresh`,{method:"POST",credentials:"same-origin"});
+    if(refreshed.ok)return streamPlaygroundMessage(sessionId,content,modelId,handlers,signal,false);
+  }
+
+  if(!response.ok){
+    const body=await response.json().catch(()=>({}));
+    throw new Error(body?.detail||body?.error?.message||`Request failed (${response.status})`);
+  }
+  if(!response.body)throw new Error("Streaming response is unavailable.");
+
+  const reader=response.body.getReader();
+  const decoder=new TextDecoder();
+  let buffer="";
+  let doneSummary:PlaygroundStreamDone={};
+
+  function consume(block:string){
+    let eventName="message";
+    const dataLines:string[]=[];
+    for(const line of block.split("\n")){
+      if(line.startsWith("event:"))eventName=line.slice(6).trim();
+      else if(line.startsWith("data:"))dataLines.push(line.slice(5).trimStart());
+    }
+    if(!dataLines.length)return;
+
+    const raw=dataLines.join("\n");
+    let payload:any={};
+    try{payload=JSON.parse(raw)}catch{throw new Error("Playground returned an invalid stream event.");}
+
+    if(eventName==="delta"){
+      const delta=typeof payload?.content==="string"?payload.content:"";
+      if(delta)handlers.onDelta(delta);
+      return;
+    }
+    if(eventName==="error"){
+      throw new Error(typeof payload?.message==="string"?payload.message:"Playground request failed.");
+    }
+    if(eventName==="done"){
+      doneSummary=payload as PlaygroundStreamDone;
+      handlers.onDone?.(doneSummary);
+    }
+  }
+
+  try{
+    while(true){
+      const {done,value}=await reader.read();
+      if(done)break;
+      buffer+=decoder.decode(value,{stream:true});
+      buffer=buffer.replace(/\r\n/g,"\n");
+      let boundary=buffer.indexOf("\n\n");
+      while(boundary>=0){
+        const block=buffer.slice(0,boundary);
+        buffer=buffer.slice(boundary+2);
+        if(block.trim())consume(block);
+        boundary=buffer.indexOf("\n\n");
+      }
+    }
+    buffer+=decoder.decode();
+    buffer=buffer.replace(/\r\n/g,"\n");
+    if(buffer.trim())consume(buffer);
+    return doneSummary;
+  }finally{
+    reader.releaseLock();
+  }
 }
 
 export const api={
@@ -283,6 +425,22 @@ export const api={
   usage:()=>rawJson<UsageDaily[]>(`${CONTROL}/usage`),
   requests:()=>rawJson<RequestEvent[]>(`${CONTROL}/requests`),
   settings:()=>rawJson<ConsoleSettings>(`${CONTROL}/settings`),
+
+  playgroundSessions:(projectId:string)=>rawJson<PlaygroundSession[]>(`${CONTROL}/playground/sessions?project_id=${encodeURIComponent(projectId)}`),
+  createPlaygroundSession:(projectId:string,modelId:string|null)=>rawJson<PlaygroundSession>(`${CONTROL}/playground/sessions`,{
+    method:"POST",headers:mutationHeaders(),body:JSON.stringify({project_id:projectId,model_id:modelId})
+  }),
+  playgroundSession:(sessionId:string)=>rawJson<PlaygroundConversation>(`${CONTROL}/playground/sessions/${encodeURIComponent(sessionId)}`),
+  renamePlaygroundSession:(sessionId:string,title:string)=>rawJson<PlaygroundSession>(`${CONTROL}/playground/sessions/${encodeURIComponent(sessionId)}`,{
+    method:"PATCH",headers:mutationHeaders(),body:JSON.stringify({title})
+  }),
+  deletePlaygroundSession:(sessionId:string)=>rawJson<void>(`${CONTROL}/playground/sessions/${encodeURIComponent(sessionId)}`,{
+    method:"DELETE",headers:{"X-CSRF-Token":csrfToken()}
+  }),
+  sendPlaygroundMessage:(sessionId:string,content:string,modelId:string)=>rawJson<PlaygroundTurn>(`${CONTROL}/playground/sessions/${encodeURIComponent(sessionId)}/messages`,{
+    method:"POST",headers:mutationHeaders(),body:JSON.stringify({content,model_id:modelId})
+  }),
+  streamPlaygroundMessage,
 
   models:(key:string)=>rawJson<ModelsResponse>(`${GATEWAY}/models`,{
     headers:{Authorization:`Bearer ${key}`}
