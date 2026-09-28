@@ -1669,3 +1669,18 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
   .app-stage::after{left:0}
   .sidebar-scrim{background:rgba(0,3,10,.70)}
 }
+
+
+/* Dark-theme specificity fixes */
+.settings-action-card.compact-action{
+  background:rgba(7,14,28,.72);
+  border-color:rgba(125,153,224,.12);
+}
+.settings-action-card strong,
+.docs-note strong{color:#dce6f8}
+@media(max-width:620px){
+  .data-table tr{
+    background:rgba(8,15,29,.88);
+    border-color:rgba(125,153,222,.12);
+  }
+}
