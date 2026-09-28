@@ -348,3 +348,83 @@ func playgroundInternalHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, response)
 }
+
+
+func playgroundInternalStreamHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeRequestAPIError(w, r, newAPIError(http.StatusMethodNotAllowed, "method_not_allowed", "NEXORA_METHOD_NOT_ALLOWED", "Method not allowed."))
+		return
+	}
+	if !verifyInternalPlaygroundToken(r) {
+		writeRequestAPIError(w, r, newAPIError(http.StatusUnauthorized, "authentication_error", "NEXORA_INTERNAL_AUTH_FAILED", "Internal playground authentication failed."))
+		return
+	}
+
+	payload, apiErr := decodePlaygroundChatRequest(w, r)
+	if apiErr != nil {
+		writeRequestAPIError(w, r, apiErr)
+		return
+	}
+
+	route, ok := modelCatalog.Get(strings.TrimSpace(payload.Model))
+	if !ok {
+		writeRequestAPIError(w, r, newAPIError(http.StatusServiceUnavailable, "service_unavailable", "NEXORA_MODEL_UNAVAILABLE", "Requested model is not available."))
+		return
+	}
+
+	lease, admissionErr := admissionController.AdmitPlayground(r.Context(), payload.UserID, payload.ProjectID)
+	if admissionErr != nil {
+		writeRequestAPIError(w, r, admissionErr)
+		return
+	}
+	defer lease.Release(context.WithoutCancel(r.Context()))
+
+	req := &ChatCompletionRequest{
+		Model:    strings.TrimSpace(payload.Model),
+		Messages: payload.Messages,
+		Stream:   true,
+	}
+
+	metrics, providerErr := inferenceProvider.Chat(r.Context(), req, route, w)
+	if providerErr != nil {
+		writeRequestAPIError(w, r, providerErr)
+		return
+	}
+	if metrics == nil || !metrics.Completed {
+		return
+	}
+
+	var totalTokens *int
+	if metrics.PromptTokens != nil && metrics.CompletionTokens != nil {
+		total := *metrics.PromptTokens + *metrics.CompletionTokens
+		totalTokens = &total
+	}
+	statusCode := metrics.Status
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+
+	summary := map[string]any{
+		"request_id": requestIDFromContext(r.Context()),
+		"model":      req.Model,
+		"metrics": PlaygroundMetrics{
+			Status:           statusCode,
+			TTFTMS:           metrics.TTFTMS,
+			LatencyMS:        metrics.LatencyMS,
+			PromptTokens:     metrics.PromptTokens,
+			CompletionTokens: metrics.CompletionTokens,
+			TotalTokens:      totalTokens,
+		},
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return
+	}
+
+	_, _ = w.Write([]byte("\nevent: nexora_metrics\ndata: "))
+	_, _ = w.Write(encoded)
+	_, _ = w.Write([]byte("\n\n"))
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
