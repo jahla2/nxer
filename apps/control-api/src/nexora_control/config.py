@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +41,36 @@ class Settings(BaseSettings):
     local_admin_display_name: str = "Local Developer"
     dev_expose_password_reset_token: bool = True
     dev_expose_email_verification_token: bool = True
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        if self.environment.lower() != "production":
+            return self
+
+        def require_secret(name: str, value: str, minimum: int) -> None:
+            normalized = value.strip()
+            lowered = normalized.lower()
+            if len(normalized) < minimum:
+                raise ValueError(f"{name} must be at least {minimum} characters in production")
+            if any(marker in lowered for marker in ("change_me", "change-me", "local-dev")):
+                raise ValueError(f"{name} contains a development placeholder")
+
+        require_secret("API_KEY_HASH_PEPPER", self.api_key_hash_pepper, 32)
+        require_secret("SESSION_SECRET", self.session_secret, 32)
+        require_secret("CONTROL_ADMIN_TOKEN", self.control_admin_token, 24)
+
+        if not self.dashboard_url.lower().startswith("https://"):
+            raise ValueError("DASHBOARD_URL must use https:// in production")
+        if self.local_bootstrap_enabled:
+            raise ValueError("LOCAL_BOOTSTRAP_ENABLED must be false in production")
+        if self.dev_expose_password_reset_token:
+            raise ValueError("DEV_EXPOSE_PASSWORD_RESET_TOKEN must be false in production")
+        if self.dev_expose_email_verification_token:
+            raise ValueError("DEV_EXPOSE_EMAIL_VERIFICATION_TOKEN must be false in production")
+        if not self.smtp_configured:
+            raise ValueError("SMTP_HOST and SMTP_FROM_EMAIL are required in production")
+
+        return self
 
     @property
     def smtp_configured(self) -> bool:
