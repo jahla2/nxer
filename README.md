@@ -68,7 +68,9 @@ Start the full stack from the repository root:
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-The tracked migration runner applies each SQL migration exactly once and safely skips already-applied versions. The local bootstrap then runs idempotently before the application services start. Open `http://localhost:8080`, register or sign in, create/select a project, then create an API key. Raw API key secrets are shown once; store them securely. The Models and Playground surfaces use Nexora public model IDs and never require an upstream provider model ID.
+The tracked migration runner applies each SQL migration exactly once and safely skips already-applied versions. The local bootstrap then runs idempotently before the application services start. Open `http://localhost:8080`, register or sign in, and create/select a project. Create API keys only for external application integration; raw API key secrets are shown once and should be stored securely.
+
+The Playground is session-authenticated and does not require a Nexora API key. Logged-in users can select an active free model, run multi-turn test conversations, reopen project-scoped chat history, and inspect response status, latency, TTFT, and token counts. Playground inference still uses the Go data plane through an internal-only authenticated route, so provider credentials remain server-side and existing rate/concurrency protections stay in force.
 
 Useful local endpoints:
 
