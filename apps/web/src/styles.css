@@ -1663,9 +1663,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 }
 
 @media(max-width:1160px) and (min-width:801px){
-  .app-stage::after{inset-left:82px}
+  .app-stage::after{left:82px}
 }
 @media(max-width:800px){
-  .app-stage::after{inset-left:0}
+  .app-stage::after{left:0}
   .sidebar-scrim{background:rgba(0,3,10,.70)}
 }
