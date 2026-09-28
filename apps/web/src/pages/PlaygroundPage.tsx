@@ -55,6 +55,7 @@ export function PlaygroundPage({
   const [sending,setSending]=useState(false);
   const [error,setError]=useState("");
   const endRef=useRef<HTMLDivElement|null>(null);
+  const abortRef=useRef<AbortController|null>(null);
 
   const defaultModel=useMemo(
     ()=>models.find(item=>item.public_id===initialModelPublicId)
@@ -153,12 +154,18 @@ export function PlaygroundPage({
     }
   }
 
+  function stop(){
+    abortRef.current?.abort();
+  }
+
   async function send(){
     const prompt=input.trim();
     if(!prompt||!projectId||!selectedModelId||sending)return;
 
     setSending(true);setError("");setInput("");
     let sessionId=activeSessionId;
+    const controller=new AbortController();
+    abortRef.current=controller;
 
     try{
       if(!sessionId){
@@ -167,9 +174,11 @@ export function PlaygroundPage({
         setSessions(current=>[created,...current.filter(item=>item.id!==created.id)]);
       }
 
-      const optimistic:PlaygroundMessage={
-        id:`temp-${Date.now()}`,
-        session_id:sessionId,
+      const resolvedSessionId=sessionId;
+      const stamp=Date.now();
+      const optimisticUser:PlaygroundMessage={
+        id:`temp-user-${stamp}`,
+        session_id:resolvedSessionId,
         role:"user",
         content:prompt,
         model_id:selectedModelId,
@@ -183,21 +192,43 @@ export function PlaygroundPage({
         completion_tokens:null,
         created_at:new Date().toISOString(),
       };
-      setMessages(current=>[...current,optimistic]);
+      const optimisticAssistant:PlaygroundMessage={
+        ...optimisticUser,
+        id:`temp-assistant-${stamp}`,
+        role:"assistant",
+        content:"",
+        created_at:new Date(Date.now()+1).toISOString(),
+      };
+      setMessages(current=>[...current,optimisticUser,optimisticAssistant]);
 
-      const turn=await api.sendPlaygroundMessage(sessionId,prompt,selectedModelId);
-      setMessages(current=>[
-        ...current.filter(item=>item.id!==optimistic.id),
-        turn.user_message,
-        turn.assistant_message,
-      ]);
-      setActiveSessionId(turn.session.id);
+      await api.streamPlaygroundMessage(
+        resolvedSessionId,
+        prompt,
+        selectedModelId,
+        {
+          onDelta:delta=>{
+            setMessages(current=>current.map(item=>
+              item.id===optimisticAssistant.id
+                ?{...item,content:item.content+delta}
+                :item
+            ));
+          },
+        },
+        controller.signal,
+      );
+
+      const refreshed=await api.playgroundSession(resolvedSessionId);
+      setMessages(refreshed.messages);
+      setActiveSessionId(refreshed.session.id);
       setSessions(current=>[
-        turn.session,
-        ...current.filter(item=>item.id!==turn.session.id),
+        refreshed.session,
+        ...current.filter(item=>item.id!==refreshed.session.id),
       ]);
     }catch(err){
-      setError(err instanceof Error?err.message:String(err));
+      const aborted=controller.signal.aborted;
+      if(!aborted)setError(err instanceof Error?err.message:String(err));
+      else setError("Generation stopped before completion.");
+
       if(sessionId){
         setActiveSessionId(sessionId);
         try{
@@ -208,10 +239,11 @@ export function PlaygroundPage({
             ...current.filter(item=>item.id!==refreshed.session.id),
           ]);
         }catch{
-          // Keep the visible error from the original send attempt.
+          // Preserve the original streaming error when history refresh fails.
         }
       }
     }finally{
+      if(abortRef.current===controller)abortRef.current=null;
       setSending(false);
     }
   }
@@ -240,7 +272,7 @@ export function PlaygroundPage({
           <span className="card-eyebrow">Playground</span>
           <strong>Test conversations</strong>
         </div>
-        <button className="playground-new-chat" onClick={newChat}>+ New</button>
+        <button className="playground-new-chat" onClick={newChat} disabled={sending}>+ New</button>
       </div>
 
       <div className="playground-history-search">
@@ -255,33 +287,29 @@ export function PlaygroundPage({
 
       <div className="playground-history-list">
         {loadingSessions?<div className="playground-history-state"><span className="spinner"/>Loading chats…</div>
-        :filteredSessions.length?filteredSessions.map(item=><button
+        :filteredSessions.length?filteredSessions.map(item=><div
           key={item.id}
           className={"playground-history-item "+(item.id===activeSessionId?"active":"")}
-          onClick={()=>void openSession(item.id)}
         >
-          <span className="playground-history-copy">
-            <strong>{item.title}</strong>
-            <small>{item.preview||"No messages yet"}</small>
-          </span>
-          <span className="playground-history-meta">
+          <button
+            className="playground-history-open"
+            onClick={()=>void openSession(item.id)}
+            disabled={sending}
+            aria-current={item.id===activeSessionId?"page":undefined}
+          >
+            <span className="playground-history-copy">
+              <strong>{item.title}</strong>
+              <small>{item.preview||"No messages yet"}</small>
+            </span>
             <time>{formatWhen(item.updated_at)}</time>
-            <span
-              role="button"
-              tabIndex={0}
-              className="playground-delete-chat"
-              aria-label={`Delete ${item.title}`}
-              onClick={event=>{event.stopPropagation();void removeSession(item.id)}}
-              onKeyDown={event=>{
-                if(event.key==="Enter"||event.key===" "){
-                  event.preventDefault();
-                  event.stopPropagation();
-                  void removeSession(item.id);
-                }
-              }}
-            >×</span>
-          </span>
-        </button>):<div className="playground-history-state">No saved chats yet.</div>}
+          </button>
+          <button
+            className="playground-delete-chat"
+            aria-label={`Delete ${item.title}`}
+            onClick={()=>void removeSession(item.id)}
+            disabled={sending}
+          >×</button>
+        </div>):<div className="playground-history-state">No saved chats yet.</div>}
       </div>
 
       <div className="playground-history-foot">
@@ -325,7 +353,11 @@ export function PlaygroundPage({
                 <strong>{message.role==="assistant"?"Nexora":"You"}</strong>
                 {message.role==="assistant"&&<span>{modelLabel(message,models)}</span>}
               </div>
-              <div className="playground-message-content">{message.content}</div>
+              <div className="playground-message-content">
+                {message.content}
+                {message.role==="assistant"&&message.id.startsWith("temp-assistant-")&&sending&&<span className="playground-stream-cursor" aria-hidden="true"/>}
+                {message.role==="assistant"&&message.id.startsWith("temp-assistant-")&&!message.content&&<span className="playground-typing" role="status"><i/><i/><i/></span>}
+              </div>
               {message.role==="assistant"&&message.status!==null&&<div className="playground-message-metrics">
                 <span className={(message.status>=200&&message.status<300)?"metric-ok":"metric-error"}>
                   <i/>{message.status}
@@ -338,13 +370,6 @@ export function PlaygroundPage({
               </div>}
             </div>
           </article>)}
-          {sending&&<article className="playground-message assistant playground-generating">
-            <div className="playground-message-avatar">N</div>
-            <div className="playground-message-body">
-              <div className="playground-message-author"><strong>Nexora</strong><span>Generating</span></div>
-              <div className="playground-typing" role="status"><i/><i/><i/></div>
-            </div>
-          </article>}
           <div ref={endRef}/>
         </div>}
       </div>
@@ -364,11 +389,11 @@ export function PlaygroundPage({
             aria-label="Playground message"
           />
           <button
-            className="playground-send"
-            onClick={()=>void send()}
-            disabled={!input.trim()||!selectedModelId||sending}
-            aria-label="Send message"
-          >{sending?"…":"↑"}</button>
+            className={"playground-send "+(sending?"stop":"")}
+            onClick={sending?stop:()=>void send()}
+            disabled={!sending&&(!input.trim()||!selectedModelId)}
+            aria-label={sending?"Stop generation":"Send message"}
+          >{sending?"■":"↑"}</button>
         </div>
         <div className="playground-composer-meta">
           <span>Enter to send · Shift+Enter for new line</span>
