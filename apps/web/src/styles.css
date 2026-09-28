@@ -1925,3 +1925,71 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 .playground-send.stop:hover:not(:disabled){
   background:rgba(255,255,255,.12);border-color:rgba(164,181,220,.20);color:#fff;
 }
+
+
+/* ── Monitoring Charts ──────────────────────────────────────────────────── */
+.monitoring-section{display:grid;gap:14px}
+
+/* Stat summary row above latency chart */
+.chart-stat-row{
+  display:flex;gap:0;margin-bottom:14px;
+  border:1px solid var(--border);border-radius:10px;overflow:hidden;
+}
+.chart-stat-item{
+  flex:1;padding:10px 14px;border-right:1px solid var(--border);
+  display:grid;gap:4px;min-width:0;
+}
+.chart-stat-item:last-child{border-right:0}
+.chart-stat-label{font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.06em;font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chart-stat-value{font-size:15px;font-weight:700;color:#e8efff;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.chart-stat-muted{color:var(--text-soft);font-size:13px}
+
+/* Chart canvas wrapper */
+.chart-wrap{position:relative;margin-top:4px}
+
+/* X-axis time labels */
+.chart-x-labels{
+  display:flex;justify-content:space-between;
+  margin-top:5px;font-size:9px;color:var(--text-faint);
+  font-variant-numeric:tabular-nums;letter-spacing:.02em;
+}
+
+/* Empty state */
+.chart-empty{
+  font-size:11px;color:var(--text-faint);text-align:center;
+  padding:28px 0;margin:0;
+  border:1px dashed var(--border);border-radius:8px;margin-top:4px;
+}
+
+/* Hover tooltip */
+.chart-tooltip{
+  position:absolute;bottom:calc(100% + 10px);
+  transform:translateX(-50%);
+  background:var(--surface-muted);
+  border:1px solid var(--border-strong);
+  border-radius:9px;padding:8px 12px;
+  display:grid;gap:3px;
+  pointer-events:none;z-index:30;white-space:nowrap;
+  box-shadow:0 8px 28px rgba(0,0,0,.38),0 0 0 1px rgba(91,124,255,.06);
+}
+.chart-tip-label{font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;font-weight:750}
+.chart-tip-value{font-size:11px;font-weight:650;color:var(--text)}
+
+/* Legend */
+.chart-legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.chart-legend-item{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-faint)}
+.chart-legend-dot{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
+
+/* Job duration sub-charts */
+.job-charts-grid{display:grid;gap:18px}
+.job-chart-item{display:grid;gap:5px}
+.job-chart-header{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.job-chart-header strong{font-size:11px;color:#e8efff}
+.job-chart-stat{font-size:9px;color:var(--text-faint);font-variant-numeric:tabular-nums}
+.job-chart-fail{color:var(--danger)}
+
+@media(max-width:760px){
+  .chart-stat-row{flex-wrap:wrap}
+  .chart-stat-item{border-right:0;border-bottom:1px solid var(--border)}
+  .chart-stat-item:last-child{border-bottom:0}
+}
