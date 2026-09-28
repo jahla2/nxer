@@ -84,6 +84,9 @@ export function PlaygroundPage({
 
   useEffect(()=>{
     let cancelled=false;
+    abortRef.current?.abort();
+    abortRef.current=null;
+    setSending(false);
     setMessages([]);
     setActiveSessionId("");
     setError("");
