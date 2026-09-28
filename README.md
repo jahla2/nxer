@@ -1,103 +1,91 @@
-# Nexora AI Gateway
+# Nexr AI Service
 
-Nexora AI Gateway is a reusable, white-label, OpenAI-compatible API gateway for free-model inference across multiple client applications.
+Nexr AI Service is a production-ready, provider-agnostic AI infrastructure service that gives applications a single, stable, OpenAI-compatible API for AI inference.
+
+Instead of coupling applications directly to individual AI providers, Nexr abstracts model access, routing, authentication, quotas, reliability, and usage management behind one consistent service.
+
+This allows teams to change models, add new inference backends, and introduce failover strategies without changing client integrations.
 
 ## Architecture
+
 - React + TypeScript developer console
-- Go data plane for concurrent inference proxying and SSE streaming
+- Go high-performance inference service
 - Python FastAPI control plane
-- Celery + Redis background work
+- Celery + Redis background processing
 - PostgreSQL authoritative persistence
-- Redis for limits, quotas, idempotency, locks, and hot metadata
-- Private provider adapter for V1 free-model inference; upstream routing is not exposed to clients
-- Docker Compose + Nginx + Cloudflare Tunnel deployment
+- Redis for rate limiting, quotas, caching, locks, and idempotency
+- Private Nexr Model Router
+- Docker Compose + Nginx + Cloudflare Tunnel
 
-## Quick start
-1. Copy `.env.example` to `.env` and fill server-side secrets.
-2. Run `docker compose -f infra/docker-compose.yml up --build`.
-3. Check `/health` on the gateway and control API.
+## Public API
 
-## Security
-Never commit `.env`, provider credentials, signing secrets, database passwords, or Redis credentials.
+Applications integrate only with Nexr:
 
-## Client examples
+```text
+POST /v1/chat/completions
+GET  /v1/models
+```
+
+Example:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer $NEXORA_API_KEY" \
+  -H "Authorization: Bearer $NEXR_API_KEY" \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000" \
   -d '{"model":"auto-free","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8080/v1", api_key="nxa_live_...")
-print(client.chat.completions.create(model="auto-free", messages=[{"role":"user","content":"Hello"}]))
+Public model IDs remain Nexr-owned:
+
+```text
+auto-free
+nexr/general-1
+nexr/coding-1
+nexr/reasoning-1
 ```
 
-```js
-import OpenAI from "openai";
-const client = new OpenAI({ baseURL: "http://localhost:8080/v1", apiKey: "nxa_live_..." });
-const result = await client.chat.completions.create({ model: "auto-free", messages: [{ role: "user", content: "Hello" }] });
+Internal model providers, credentials, routing logic, upstream IDs, failover rules, and infrastructure remain private.
+
+## Why Nexr
+
+Nexr acts as the AI service boundary between client applications and underlying inference infrastructure.
+
+Applications only need:
+
+```text
+API URL
+API Key
+Model ID
+Request
+Response
 ```
 
-## Provider-neutral model IDs
+Everything behind that boundary can evolve independently.
 
-`GET /v1/models` returns only Nexora-owned public identifiers. The special `auto-free` route remains stable, while concrete free models use opaque `nexora/<alias>` IDs. The provider key, upstream route, upstream completion IDs, and provider-specific response metadata remain internal to the gateway.
+This keeps integrations simple while allowing Nexr to become more scalable, reliable, secure, and intelligent without breaking existing applications.
 
-## Production validation
-Run migrations in order before starting services. Validate `/ready`, verify the free-model catalog, run the security/load suites, and perform a database backup/restore drill before exposing the Cloudflare hostname.
-
-
-## Run locally
-
-Prerequisites: Docker Desktop with Docker Compose v2 and an OpenRouter API key.
+## Run Locally
 
 ```bash
 git checkout main
 git pull
 copy .env.example .env
-```
-
-On macOS/Linux use `cp .env.example .env`. Edit `.env` and set `OPENROUTER_API_KEY`. For a private local machine the provided development-only placeholders can boot the stack; replace all three secret placeholders before sharing or deploying it.
-
-Start the full stack from the repository root:
-
-```bash
 docker compose -f infra/docker-compose.yml up --build
 ```
 
-The tracked migration runner applies each SQL migration exactly once and safely skips already-applied versions. The local bootstrap then runs idempotently before the application services start. Open `http://localhost:8080`, register or sign in, create/select a project, then create an API key. Raw API key secrets are shown once; store them securely. The Models and Playground surfaces use Nexora public model IDs and never require an upstream provider model ID.
+Open:
 
-Useful local endpoints:
+```text
+http://localhost:8080
+```
 
-- Dashboard: `http://localhost:8080/`
-- Gateway health/readiness: `http://localhost:8080/health`, `http://localhost:8080/ready`
-- Control health/readiness: `http://localhost:8080/api/health`, `http://localhost:8080/api/ready`
-- Models: `http://localhost:8080/v1/models`
-- Chat: `http://localhost:8080/v1/chat/completions`
+Create a project, generate a Nexr API key, and start sending requests.
 
-Stop with `docker compose -f infra/docker-compose.yml down`. Add `-v` only when you intentionally want to delete the local PostgreSQL volume.
-
-
-### Local service configuration
-
-The same root `.env` is injected into the Go gateway, FastAPI control plane, Celery worker/beat, migration runner, and local bootstrap. PostgreSQL reads `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`; Redis reads `REDIS_PASSWORD`; application services use `DATABASE_URL` and `REDIS_URL`. Keep these values consistent when changing local credentials.
-
-Long-running services use Docker's `unless-stopped` restart policy. Database migrations are tracked in `schema_migrations`, so restarting the stack does not reapply completed schema files.
-
-
-## Production stack
-
-Use the dedicated production stack instead of the development Compose file:
+## Production
 
 ```bash
 cp .env.production.example .env.production
-# Replace every CHANGE_ME value.
 docker compose -f infra/docker-compose.prod.yml up -d --build
 ```
 
-The production stack uses compiled/prebuilt application images, non-root runtime users, read-only application filesystems, an internal PostgreSQL/Redis network, hardened Nginx headers, fail-fast production configuration checks, and optional Cloudflare Tunnel ingress.
-
-See `docs/production-release.md` for deployment, backup/restore, Cloudflare, and release-validation procedures.
+Never expose internal provider credentials, routing metadata, database secrets, Redis credentials, or signing secrets.
