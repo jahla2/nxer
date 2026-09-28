@@ -33,6 +33,7 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       API_KEY_HASH_PEPPER: test-api-key-pepper-that-is-longer-than-thirty-two-characters
       API_KEY_AUTH_CACHE_TTL_SECONDS: "300"
+      PLAYGROUND_INTERNAL_TOKEN: test-playground-token-that-is-longer-than-thirty-two-characters
     defaults: {run: {working-directory: apps/gateway}}
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +77,8 @@ jobs:
       DEV_EXPOSE_PASSWORD_RESET_TOKEN: "true"
       DEV_EXPOSE_EMAIL_VERIFICATION_TOKEN: "true"
       LOCAL_BOOTSTRAP_ENABLED: "false"
+      PLAYGROUND_INTERNAL_TOKEN: test-playground-token-that-is-longer-than-thirty-two-characters
+      GATEWAY_INTERNAL_URL: http://127.0.0.1:9
     defaults: {run: {working-directory: apps/control-api}}
     steps:
       - uses: actions/checkout@v4
@@ -163,7 +166,7 @@ jobs:
       - run: sh infra/postgres/migrate.sh
       - name: Verify schema
         run: |
-          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "9"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM schema_migrations")" = "10"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT is_nullable FROM information_schema.columns WHERE table_name='usage_daily' AND column_name='model_id'")" = "YES"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_daily' AND indexname='ux_usage_daily_dimensions'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='models' AND column_name='provider_key'")" = "1"
@@ -174,6 +177,8 @@ jobs:
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.columns WHERE table_name='usage_events' AND column_name='aggregated_at'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM pg_indexes WHERE tablename='usage_events' AND indexname='idx_usage_events_unaggregated'")" = "1"
           test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM models WHERE public_id='auto-free' AND active=true AND is_free=true")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='playground_sessions'")" = "1"
+          test "$(psql "$DATABASE_URL" -Atqc "SELECT count(*) FROM information_schema.tables WHERE table_name='playground_messages'")" = "1"
 
   compose-config:
     runs-on: ubuntu-latest
@@ -196,6 +201,7 @@ jobs:
           sed -i 's/CHANGE_ME_LONG_RANDOM_API_KEY_PEPPER/test-api-key-pepper-that-is-longer-than-thirty-two-characters/g' .env.production
           sed -i 's/CHANGE_ME_LONG_RANDOM_SESSION_SECRET/test-session-secret-that-is-longer-than-thirty-two-characters/g' .env.production
           sed -i 's/CHANGE_ME_LONG_RANDOM_ADMIN_TOKEN/test-admin-token-that-is-longer-than-twenty-four/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_PLAYGROUND_TOKEN/test-playground-token-that-is-longer-than-thirty-two-characters/g' .env.production
           sed -i 's/CHANGE_ME_SMTP_USERNAME/test-smtp-user/g' .env.production
           sed -i 's/CHANGE_ME_SMTP_PASSWORD/test-smtp-password/g' .env.production
           sed -i 's#https://openrouter.ai/api/v1#https://127.0.0.1:9#' .env.production
@@ -268,6 +274,7 @@ jobs:
           sed -i 's/CHANGE_ME_LONG_RANDOM_API_KEY_PEPPER/test-api-key-pepper-that-is-longer-than-thirty-two-characters/g' .env.production
           sed -i 's/CHANGE_ME_LONG_RANDOM_SESSION_SECRET/test-session-secret-that-is-longer-than-thirty-two-characters/g' .env.production
           sed -i 's/CHANGE_ME_LONG_RANDOM_ADMIN_TOKEN/test-admin-token-that-is-longer-than-twenty-four/g' .env.production
+          sed -i 's/CHANGE_ME_LONG_RANDOM_PLAYGROUND_TOKEN/test-playground-token-that-is-longer-than-thirty-two-characters/g' .env.production
           sed -i 's/CHANGE_ME_SMTP_USERNAME/test-smtp-user/g' .env.production
           sed -i 's/CHANGE_ME_SMTP_PASSWORD/test-smtp-password/g' .env.production
       - name: Start database and run migrations
@@ -290,7 +297,7 @@ jobs:
           BACKUP_FILE="$(cat /tmp/backup.path)"           RESTORE_DATABASE_URL="postgresql://nexora:test-database-password-123456@postgres:5432/nexora_restore"           ALLOW_DESTRUCTIVE_RESTORE=yes             docker compose -f infra/docker-compose.prod.yml --profile restore run --rm restore
       - name: Verify restored schema and data
         run: |
-          test "$(docker compose -f infra/docker-compose.prod.yml exec -T postgres psql -U nexora -d nexora_restore -Atqc 'SELECT count(*) FROM schema_migrations')" = "9"
+          test "$(docker compose -f infra/docker-compose.prod.yml exec -T postgres psql -U nexora -d nexora_restore -Atqc 'SELECT count(*) FROM schema_migrations')" = "10"
           test "$(docker compose -f infra/docker-compose.prod.yml exec -T postgres psql -U nexora -d nexora_restore -Atqc "SELECT value FROM release_restore_probe WHERE id=1")" = "backup-ok"
       - name: Recovery diagnostics
         if: always()
