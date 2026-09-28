@@ -79,7 +79,13 @@ Open:
 http://localhost:8080
 ```
 
-Create a project, generate a Nexr API key, and start sending requests.
+Create a project and generate a Nexr API key when integrating an external application.
+
+### Playground
+
+The Playground is session-authenticated, so logged-in users do not paste a Nexr API key to test models. Select the current project and any active free model, then start a multi-turn chat. Responses stream into the conversation, project-scoped history is saved in PostgreSQL, and completed messages show status, latency, TTFT, and token counts.
+
+Playground traffic still runs through the Go inference data plane using an internal-only server credential, so provider credentials remain server-side and the same model routing, retry, circuit-breaker, project, and global safety limits remain in force.
 
 ## Production
 
