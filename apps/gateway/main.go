@@ -70,6 +70,7 @@ func main() {
 	mux.Handle("/v1/models", authMiddleware(apiKeyAuthenticator, http.HandlerFunc(modelsHandler)))
 	mux.Handle("/v1/chat/completions", authMiddleware(apiKeyAuthenticator, http.HandlerFunc(chatHandler)))
 	mux.HandleFunc("/internal/playground/chat", playgroundInternalHandler)
+	mux.HandleFunc("/internal/playground/stream", playgroundInternalStreamHandler)
 
 	server := &http.Server{
 		Addr: getenv("GATEWAY_ADDR", ":8080"),
