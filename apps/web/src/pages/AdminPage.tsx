@@ -1,5 +1,8 @@
 import React,{useEffect,useMemo,useState} from "react";
 import {api,AdminJobRun,AuditLogEntry} from "../api";
+import {Pagination} from "../components/Pagination";
+
+const PAGE_SIZE=20;
 
 function formatDuration(value:number|null){
   if(value==null)return "—";
@@ -35,6 +38,8 @@ export function AdminPage(){
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
   const [checkedAt,setCheckedAt]=useState<Date|null>(null);
+  const [jobsPage,setJobsPage]=useState(1);
+  const [auditPage,setAuditPage]=useState(1);
 
   async function load(){
     setLoading(true);setError("");
@@ -45,6 +50,8 @@ export function AdminPage(){
       ]);
       setJobs(jobRows);
       setAudit(auditRows);
+      setJobsPage(1);
+      setAuditPage(1);
       setCheckedAt(new Date());
     }catch(err){
       setError(err instanceof Error?err.message:String(err));
@@ -54,6 +61,9 @@ export function AdminPage(){
   }
 
   useEffect(()=>{void load()},[]);
+
+  const pagedJobs=useMemo(()=>jobs.slice((jobsPage-1)*PAGE_SIZE,jobsPage*PAGE_SIZE),[jobs,jobsPage]);
+  const pagedAudit=useMemo(()=>audit.slice((auditPage-1)*PAGE_SIZE,auditPage*PAGE_SIZE),[audit,auditPage]);
 
   const summary=useMemo(()=>({
     failed:jobs.filter(item=>item.status==="failed").length,
@@ -89,7 +99,7 @@ export function AdminPage(){
         {jobs.length?<div className="data-table-wrap">
           <table className="data-table admin-jobs-table">
             <thead><tr><th>Started</th><th>Job</th><th>Status</th><th>Duration</th><th>Result</th><th>Worker</th></tr></thead>
-            <tbody>{jobs.map(item=><tr key={item.id}>
+            <tbody>{pagedJobs.map(item=><tr key={item.id}>
               <td data-label="Started">{new Date(item.started_at).toLocaleString()}</td>
               <td data-label="Job"><code>{item.job_name.replace("nexora.","")}</code></td>
               <td data-label="Status"><span className={"status "+statusClass(item.status)}>{item.status}</span>{item.error_message&&<small className="table-error" title={item.error_message}>{item.error_message}</small>}</td>
@@ -99,6 +109,7 @@ export function AdminPage(){
             </tr>)}</tbody>
           </table>
         </div>:<div className="empty compact-empty">No background job executions have been recorded yet.</div>}
+        <Pagination page={jobsPage} pageSize={PAGE_SIZE} totalItems={jobs.length} onPageChange={setJobsPage}/>
       </section>
 
       <section className="content-card">
@@ -109,7 +120,7 @@ export function AdminPage(){
         {audit.length?<div className="data-table-wrap">
           <table className="data-table admin-audit-table">
             <thead><tr><th>Time</th><th>Action</th><th>Resource</th><th>Actor</th><th>Metadata</th></tr></thead>
-            <tbody>{audit.map(item=><tr key={item.id}>
+            <tbody>{pagedAudit.map(item=><tr key={item.id}>
               <td data-label="Time">{new Date(item.created_at).toLocaleString()}</td>
               <td data-label="Action"><code>{item.action}</code></td>
               <td data-label="Resource">{item.resource_type}<small className="cell-subtle">{shortId(item.resource_id)}</small></td>
@@ -118,6 +129,7 @@ export function AdminPage(){
             </tr>)}</tbody>
           </table>
         </div>:<div className="empty compact-empty">No audit events are available.</div>}
+        <Pagination page={auditPage} pageSize={PAGE_SIZE} totalItems={audit.length} onPageChange={setAuditPage}/>
       </section>
     </>}
   </div>;
