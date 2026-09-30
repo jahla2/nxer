@@ -1,5 +1,8 @@
 import React,{useEffect,useMemo,useState} from "react";
 import {api,RequestEvent} from "../api";
+import {Pagination} from "../components/Pagination";
+
+const PAGE_SIZE=20;
 
 function shortId(value:string|null){
   if(!value)return "—";
@@ -16,15 +19,18 @@ export function RequestsPage(){
   const [rows,setRows]=useState<RequestEvent[]>([]);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
+  const [page,setPage]=useState(1);
 
   async function load(){
     setLoading(true);setError("");
-    try{setRows(await api.requests())}
+    try{setRows(await api.requests());setPage(1)}
     catch(err){setError(err instanceof Error?err.message:String(err))}
     finally{setLoading(false)}
   }
 
   useEffect(()=>{void load()},[]);
+
+  const pageRows=useMemo(()=>rows.slice((page-1)*PAGE_SIZE,page*PAGE_SIZE),[rows,page]);
 
   const summary=useMemo(()=>{
     const success=rows.filter(row=>row.status>=200&&row.status<300).length;
@@ -63,7 +69,7 @@ export function RequestsPage(){
       <div className="data-table-wrap">
         <table className="data-table request-table">
           <thead><tr><th>Time</th><th>Request</th><th>Status</th><th>Latency</th><th>TTFT</th><th>Tokens</th></tr></thead>
-          <tbody>{rows.map(row=><tr key={row.request_id}>
+          <tbody>{pageRows.map(row=><tr key={row.request_id}>
             <td data-label="Time">{new Date(row.created_at).toLocaleString()}</td>
             <td data-label="Request"><code title={row.request_id}>{shortId(row.request_id)}</code></td>
             <td data-label="Status"><span className={"http-status "+statusClass(row.status)}>{row.status}</span></td>
@@ -73,6 +79,7 @@ export function RequestsPage(){
           </tr>)}</tbody>
         </table>
       </div>
+      <Pagination page={page} pageSize={PAGE_SIZE} totalItems={rows.length} onPageChange={setPage}/>
     </section>:!loading&&!error?<div className="empty-state-card">
       <div className="empty-state-icon" aria-hidden="true">R</div>
       <h2>No requests recorded</h2>
