@@ -83,7 +83,6 @@ function AuthenticatedConsole({user}:{user:User}){
   const {setUser,logout}=useSession();
   const toast=useToast();
 
-  const [key,setKey]=useState("");
   const [projects,setProjects]=useState<Project[]>([]);
   const [projectId,setProjectId]=useState("");
   const [keys,setKeys]=useState<ApiKey[]>([]);
@@ -324,7 +323,7 @@ function AuthenticatedConsole({user}:{user:User}){
         <Route path="/overview" element={<OverviewPage user={user} projects={projects} selectedProject={selectedProject} keys={keys} onNavigate={navigateModule}/>}/>
         <Route path="/projects" element={<ProjectsPage projects={projects} projectId={projectId} onSelect={setProjectId} onCreate={openCreateProject} onRename={openRenameProject} onArchive={confirmArchive}/>}/>
         <Route path="/api-keys" element={<ApiKeysPage projects={projects} projectId={projectId} keys={keys} models={catalogModels} onProjectChange={setProjectId} onCreate={openCreateKey} onEdit={openEditKey} onRotate={confirmRotate} onRevoke={confirmRevoke}/>}/>
-        <Route path="/models" element={<ModelsPage apiKey={key} onApiKeyChange={setKey} onUseModel={modelId=>{setModel(modelId);navigateModule("Playground")}}/>}/>
+        <Route path="/models" element={<ModelsPage onUseModel={modelId=>{setModel(modelId);navigateModule("Playground")}}/>}/>
         <Route path="/playground" element={<PlaygroundPage projectId={projectId} models={catalogModels} initialModelPublicId={model}/>}/>
         <Route path="/usage" element={<UsagePage/>}/>
         <Route path="/requests" element={<RequestsPage/>}/>

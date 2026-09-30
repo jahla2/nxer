@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from "react";
 import {api,User} from "../api";
 import type {AuthRouteMode} from "../routing";
+import {DotGridBackground} from "./DotGridBackground";
 
 type SuccessState={title:string;body:string}|null;
 
@@ -33,12 +34,14 @@ export function AuthScreen({
   const [error,setError]=useState("");
   const [notice,setNotice]=useState("");
   const [success,setSuccess]=useState<SuccessState>(null);
+  const [showPassword,setShowPassword]=useState(false);
 
   useEffect(()=>{
     setError("");
     setNotice("");
     setPassword("");
     setSuccess(null);
+    setShowPassword(false);
     setResetToken(resetTokenProp);
   },[mode,resetTokenProp,verifyToken]);
 
@@ -134,6 +137,7 @@ export function AuthScreen({
 
   if(success){
     return <main className="auth-shell" id="main-content">
+      <DotGridBackground/>
       <section className="panel auth-panel auth-result-panel" aria-labelledby="auth-success-title">
         <div className="auth-result-icon" aria-hidden="true">✓</div>
         <p className="eyebrow">NEXORA AI</p>
@@ -146,6 +150,7 @@ export function AuthScreen({
 
   if(mode==="verify"){
     return <main className="auth-shell" id="main-content">
+      <DotGridBackground/>
       <section className="panel auth-panel auth-result-panel" aria-labelledby="verify-email-title">
         <div className="auth-result-icon verification" aria-hidden="true">✉</div>
         <p className="eyebrow">EMAIL VERIFICATION</p>
@@ -160,6 +165,7 @@ export function AuthScreen({
 
   if(mode==="reset"){
     return <main className="auth-shell" id="main-content">
+      <DotGridBackground/>
       <section className="panel auth-panel" aria-labelledby="reset-password-title">
         <p className="eyebrow">PASSWORD RECOVERY</p>
         <h1 id="reset-password-title">Set a new password</h1>
@@ -180,6 +186,7 @@ export function AuthScreen({
 
   if(mode==="forgot"){
     return <main className="auth-shell" id="main-content">
+      <DotGridBackground/>
       <section className="panel auth-panel" aria-labelledby="forgot-password-title">
         <p className="eyebrow">PASSWORD RECOVERY</p>
         <h1 id="forgot-password-title">Reset your password</h1>
@@ -196,24 +203,69 @@ export function AuthScreen({
   }
 
   return <main className="auth-shell" id="main-content">
+    <DotGridBackground/>
     <section className="panel auth-panel" aria-labelledby="auth-title">
       <p className="eyebrow">NEXORA AI</p>
       <h1 id="auth-title">{mode==="login"?"Sign in":"Create account"}</h1>
       <p className="subtitle">{mode==="login"?"Access your Nexora developer console.":"Create your developer account and first project."}</p>
-      <form onSubmit={submitAuth}>
-        {mode==="register"&&<label>Name<input value={displayName} onChange={event=>setDisplayName(event.target.value)} minLength={2} autoComplete="name" required data-autofocus="true"/></label>}
-        <label>Email<input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus={mode==="login"?"true":undefined}/></label>
-        <label>Password<input type="password" value={password} onChange={event=>setPassword(event.target.value)} minLength={mode==="register"?12:1} autoComplete={mode==="register"?"new-password":"current-password"} required/></label>
+      <form className="auth-form" onSubmit={submitAuth}>
+        {mode==="register"&&<label className="field">
+          <span className="field-label">Full name</span>
+          <span className="field-control">
+            <UserIcon/>
+            <input value={displayName} onChange={event=>setDisplayName(event.target.value)} minLength={2} autoComplete="name" required data-autofocus="true" placeholder="Ada Lovelace"/>
+          </span>
+        </label>}
+        <label className="field">
+          <span className="field-label">Email</span>
+          <span className="field-control">
+            <MailIcon/>
+            <input type="email" value={email} onChange={event=>setEmail(event.target.value)} autoComplete="email" required data-autofocus={mode==="login"?"true":undefined} placeholder="you@company.com"/>
+          </span>
+        </label>
+        <label className="field">
+          <span className="field-label">Password</span>
+          <span className="field-control">
+            <LockIcon/>
+            <input type={showPassword?"text":"password"} value={password} onChange={event=>setPassword(event.target.value)} minLength={mode==="register"?12:1} autoComplete={mode==="register"?"new-password":"current-password"} required placeholder="••••••••••••"/>
+            <button type="button" className="field-toggle" aria-label={showPassword?"Hide password":"Show password"} aria-pressed={showPassword} onClick={()=>setShowPassword(value=>!value)}>
+              {showPassword?<EyeOffIcon/>:<EyeIcon/>}
+            </button>
+          </span>
+          {mode==="login"&&<button type="button" className="field-inline-link field-below-link" onClick={()=>onNavigate("forgot")}>Forgot password?</button>}
+        </label>
         {mode==="register"&&<p className="form-hint">Use at least 12 characters. Nexora will create a verification link for your email address.</p>}
-        {error&&<p className="error" role="alert">{error}</p>}
-        <button disabled={busy} type="submit">{busy?"Please wait…":mode==="login"?"Sign in":"Create account"}</button>
-      </form>
-      <div className="auth-links">
-        {mode==="login"&&<button className="link-button" onClick={()=>onNavigate("forgot")}>Forgot password?</button>}
-        <button className="link-button" onClick={()=>onNavigate(mode==="login"?"register":"login")}>
-          {mode==="login"?"Need an account? Register":"Already registered? Sign in"}
+        {error&&<p className="error" role="alert"><ErrorIcon/><span>{error}</span></p>}
+        <button className="auth-submit" disabled={busy} type="submit">
+          {busy&&<span className="spinner" aria-hidden="true"/>}
+          {busy?"Please wait…":mode==="login"?"Sign in":"Create account"}
         </button>
-      </div>
+      </form>
+      <p className="auth-switch">
+        {mode==="login"?"Don't have an account?":"Already have an account?"}{" "}
+        <button className="link-button" onClick={()=>onNavigate(mode==="login"?"register":"login")}>
+          {mode==="login"?"Sign up":"Sign in"}
+        </button>
+      </p>
     </section>
   </main>;
+}
+
+function MailIcon(){
+  return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 5.5A1.5 1.5 0 0 1 4.5 4h11A1.5 1.5 0 0 1 17 5.5v9a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 14.5v-9Z" stroke="currentColor" strokeWidth="1.4"/><path d="m3.5 5.5 6.5 5 6.5-5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+function LockIcon(){
+  return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="4" y="8.5" width="12" height="8" rx="1.6" stroke="currentColor" strokeWidth="1.4"/><path d="M6.5 8.5V6a3.5 3.5 0 0 1 7 0v2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>;
+}
+function UserIcon(){
+  return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="6.5" r="3" stroke="currentColor" strokeWidth="1.4"/><path d="M3.75 16.25c.9-3.1 3.4-4.75 6.25-4.75s5.35 1.65 6.25 4.75" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>;
+}
+function EyeIcon(){
+  return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M1.5 10S4.5 4.5 10 4.5 18.5 10 18.5 10 15.5 15.5 10 15.5 1.5 10 1.5 10Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/><circle cx="10" cy="10" r="2.4" stroke="currentColor" strokeWidth="1.4"/></svg>;
+}
+function EyeOffIcon(){
+  return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.5 2.5l15 15" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><path d="M8.35 5.06A8.9 8.9 0 0 1 10 4.9c5.5 0 8.5 5.5 8.5 5.5a14.4 14.4 0 0 1-2.9 3.66M5.3 6.34C3.05 7.86 1.5 10 1.5 10s3 5.5 8.5 5.5c1 0 1.9-.16 2.72-.46" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/><path d="M8.1 10a1.9 1.9 0 0 0 2.85 1.85" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>;
+}
+function ErrorIcon(){
+  return <svg viewBox="0 0 20 20" fill="none" aria-hidden="true" style={{flex:"0 0 auto"}}><circle cx="10" cy="10" r="7.5" stroke="currentColor" strokeWidth="1.4"/><path d="M10 6.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/><circle cx="10" cy="13.2" r=".9" fill="currentColor"/></svg>;
 }

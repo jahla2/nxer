@@ -127,8 +127,7 @@ export function AppShell({
       <div className="brand-row">
         <div className="brand-mark" aria-hidden="true">N</div>
         <div className="brand-copy">
-          <strong>Nexora</strong>
-          <span>AI Gateway</span>
+          <strong>Nexr</strong>
         </div>
         <button className="sidebar-close" onClick={()=>setMobileOpen(false)} aria-label="Close navigation">×</button>
       </div>
