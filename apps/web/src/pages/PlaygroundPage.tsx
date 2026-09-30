@@ -6,6 +6,7 @@ import {
   PlaygroundMessage,
   PlaygroundSession,
 } from "../api";
+import {MarkdownMessage} from "../components/MarkdownMessage";
 
 function formatWhen(value:string){
   const date=new Date(value);
@@ -357,7 +358,7 @@ export function PlaygroundPage({
                 {message.role==="assistant"&&<span>{modelLabel(message,models)}</span>}
               </div>
               <div className="playground-message-content">
-                {message.content}
+                {message.role==="assistant"?<MarkdownMessage content={message.content}/>:message.content}
                 {message.role==="assistant"&&message.id.startsWith("temp-assistant-")&&sending&&<span className="playground-stream-cursor" aria-hidden="true"/>}
                 {message.role==="assistant"&&message.id.startsWith("temp-assistant-")&&!message.content&&<span className="playground-typing" role="status"><i/><i/><i/></span>}
               </div>
