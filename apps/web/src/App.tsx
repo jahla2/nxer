@@ -326,7 +326,7 @@ function AuthenticatedConsole({user}:{user:User}){
         <Route path="/models" element={<ModelsPage onUseModel={modelId=>{setModel(modelId);navigateModule("Playground")}}/>}/>
         <Route path="/playground" element={<PlaygroundPage projectId={projectId} models={catalogModels} initialModelPublicId={model}/>}/>
         <Route path="/usage" element={<UsagePage/>}/>
-        <Route path="/requests" element={<RequestsPage/>}/>
+        <Route path="/requests" element={<RequestsPage models={catalogModels}/>}/>
         <Route path="/status" element={<StatusPage/>}/>
         <Route path="/docs" element={<DocsPage/>}/>
         <Route path="/settings" element={<SettingsPage onUserUpdated={setUser}/>}/>

@@ -412,6 +412,12 @@ input::placeholder,textarea::placeholder{color:#98a2b3}
 }
 
 
+.table-toolbar{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.table-toolbar .inline-control{width:auto;min-width:170px}
+.table-toolbar .inline-control>span{display:block;font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;font-weight:750;margin-bottom:4px}
+.table-toolbar select{margin-top:0;height:36px}
+.table-toolbar .text-action{margin:0 0 8px}
+
 .pagination{
   display:flex;align-items:center;justify-content:space-between;gap:16px;
   margin-top:16px;padding-top:14px;border-top:1px solid var(--border);flex-wrap:wrap;
